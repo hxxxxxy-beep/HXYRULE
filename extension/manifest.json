@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "HXYRULE",
+  "version": "0.1.59",
+  "description": "Personal local video status, playback, and queued downloads for Rule34Video favorites.",
+  "action": {
+    "default_title": "HXYRULE",
+    "default_popup": "options/popup.html"
+  },
+  "options_page": "options/options.html",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "downloads",
+    "contextMenus",
+    "alarms",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://rule34video.com/*",
+    "https://www.rule34video.com/*",
+    "http://127.0.0.1:17934/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://rule34video.com/*",
+        "https://www.rule34video.com/*"
+      ],
+      "js": ["content/favorites.js"],
+      "css": ["content/favorites.css"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/favorites.css"],
+      "matches": [
+        "https://rule34video.com/*",
+        "https://www.rule34video.com/*"
+      ]
+    }
+  ]
+}

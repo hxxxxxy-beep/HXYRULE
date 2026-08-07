@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "HXY Source Han Serif Force",
+  "version": "1.0.0",
+  "description": "Force locally installed Source Han Serif on all web pages.",
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ]
+}

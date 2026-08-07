@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>HXYRULE Settings</title>
+  <style>
+    :root {
+      --bg: #f6f1e7;
+      --ink: #2c2416;
+      --accent: #7a4e00;
+      --line: #c9b48a;
+    }
+    body {
+      margin: 0;
+      font: 14px/1.5 "Avenir Next", "Helvetica Neue", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 20% 0%, #fff9ee, transparent 40%),
+        linear-gradient(180deg, #f8f2e6, #efe4d2);
+      min-height: 100vh;
+      padding: 32px;
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 28px; margin: 0 0 8px; color: var(--accent); }
+    p { margin: 0 0 16px; }
+    section {
+      margin: 18px 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.7);
+    }
+    label { display: block; margin: 10px 0 4px; font-weight: 600; }
+    input, select, textarea {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font: inherit;
+    }
+    textarea { min-height: 120px; font-family: ui-monospace, monospace; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    button {
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    button.secondary { background: #fff; color: var(--accent); }
+    .status { margin-top: 10px; font-size: 13px; }
+    .ok { color: #146c2e; }
+    .bad { color: #8b1e1e; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>HXYRULE</h1>
+    <p>Personal favorites enhancer: scan, serial download, local-first playback. Local paths are never sent to the site.</p>
+
+    <section>
+      <h2>Helper pairing</h2>
+      <p>After installing the Helper, paste <code>~/Library/Application Support/HXYRULE/extension-config.json</code> below and import.</p>
+      <label>Pairing JSON</label>
+      <textarea id="pairingJson" placeholder='{"helperBase":"http://127.0.0.1:17934","token":"..."}'></textarea>
+      <div class="row">
+        <button id="importPairing">Import pairing</button>
+        <button id="checkHealth" class="secondary">Check Helper</button>
+        <button id="openLogs" class="secondary">Open logs</button>
+      </div>
+      <div id="healthStatus" class="status"></div>
+    </section>
+
+    <section>
+      <h2>Local settings</h2>
+      <label>Helper base URL</label>
+      <input id="helperBase" />
+      <label>Pairing token</label>
+      <input id="token" />
+      <label>Video root (must match Helper)</label>
+      <input id="videoDir" />
+      <label>Default player</label>
+      <select id="player">
+        <option value="iina">IINA</option>
+        <option value="vlc">VLC</option>
+        <option value="system">System default</option>
+      </select>
+      <label><input id="localPrefer" type="checkbox" /> Prefer local playback</label>
+      <label><input id="showFullPath" type="checkbox" /> Show full local path</label>
+      <div class="row">
+        <button id="save">Save</button>
+        <button id="scan" class="secondary">Rescan</button>
+        <button id="clearStale" class="secondary">Clear stale index</button>
+      </div>
+      <div id="saveStatus" class="status"></div>
+    </section>
+
+    <section>
+      <h2>Extension ID</h2>
+      <p>Current extension ID: <code id="extId"></code></p>
+      <p>Install Helper:</p>
+      <pre id="installCmd" style="white-space:pre-wrap;background:#fff;padding:10px;border:1px solid var(--line)"></pre>
+    </section>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

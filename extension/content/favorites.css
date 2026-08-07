@@ -1,0 +1,1982 @@
+/* Match Rule34Video dark skin */
+
+/* Prefer the locally installed Source Han Serif family across Rule34Video.
+ * Noto Serif CJK SC is the same glyph family under its alternate distribution
+ * name; Songti SC is the macOS fallback when Source Han is not installed. */
+@font-face {
+  font-family: 'HXY Source Han Serif';
+  src: local('Source Han Serif CN'), local('SourceHanSerifCN-SemiBold'),
+    local('Source Han Serif SC'), local('思源宋体 CN'), local('思源宋体'),
+    local('Noto Serif CJK SC'), local('Noto Serif SC'), local('Songti SC');
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+html,
+html body,
+html body *:not(.hxyrule-online-player):not(.hxyrule-online-player *):not(.video-js *):not(.flowplayer *):not(.fp-player *):not(.jwplayer *):not(.plyr *):not(.kt-player *):not(.kt_player *):not(.video-player *):not(.video_player *):not(.player-holder *):not(.player_holder *):not(.player-container *):not(.player_container *):not([class*='icon' i]):not(.vjs-control):not(.vjs-big-play-button):not(.jw-icon):not(.fp-ui):not(.fp-controls):not(.plyr__control):not([data-plyr]) {
+  font-family: 'HXY Source Han Serif', 'Source Han Serif CN', 'Source Han Serif SC', 'Noto Serif CJK SC',
+    'Noto Serif SC', 'Songti SC', serif !important;
+}
+
+/*
+ * First-paint guard. The document_start script sets this attribute before the
+ * site can paint its native header/list geometry, then removes it immediately
+ * after the synchronous HXYRULE layout pass. `visibility` preserves measurable
+ * geometry, unlike display:none, so toolbar sizing is correct before reveal.
+ */
+html[data-hxyrule-booting="1"] {
+  background: #212b31 !important;
+}
+
+html[data-hxyrule-booting="1"] body {
+  visibility: hidden !important;
+}
+
+/* The online popup is asynchronous. This class is removed when it closes. */
+html.hxyrule-online-playing .hxyrule-topstack {
+  display: none !important;
+}
+
+html.hxyrule-online-playing body {
+  padding-top: 0 !important;
+}
+
+html.hxyrule-online-playing .hxyrule-hide-window-toggle {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
+}
+
+/* Fancybox / popup close X — hide on small-window online play (exit via blocker / Esc). */
+html.hxyrule-online-playing [data-fancybox-close],
+html.hxyrule-online-playing .fancybox-close-small,
+html.hxyrule-online-playing .fancybox-close,
+html.hxyrule-online-playing .fancybox-button--close,
+html.hxyrule-online-playing .popup-close,
+html.hxyrule-online-playing .js-close-popup {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
+}
+
+/*
+ * Block the favorites grid while the popup is opening / open. Native Fancybox
+ * does this with its overlay; we also install this shield immediately on click
+ * so the empty gap before Fancybox mounts cannot select background videos.
+ * z-index stays below Fancybox (~8020) so the player and its backdrop still win.
+ */
+.hxyrule-online-blocker {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 7000 !important;
+  background: rgba(0, 0, 0, 0.35) !important;
+  pointer-events: auto !important;
+  cursor: default !important;
+}
+
+/*
+ * Prefer the player surface as the real :fullscreen element (see JS promote).
+ * Keep html:fullscreen rules as a brief bridge while documentElement holds FS
+ * before the surface swap completes.
+ */
+html:fullscreen .hxyrule-online-player,
+html:-webkit-full-screen .hxyrule-online-player,
+.hxyrule-online-player:fullscreen,
+.hxyrule-online-player:-webkit-full-screen {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  object-fit: contain !important;
+  background: #000 !important;
+  z-index: 2147482000 !important;
+  pointer-events: auto !important;
+}
+
+html:fullscreen .hxyrule-online-player video,
+html:-webkit-full-screen .hxyrule-online-player video,
+.hxyrule-online-player:fullscreen video,
+.hxyrule-online-player:-webkit-full-screen video {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: contain !important;
+  background: #000 !important;
+  /* Let clicks hit Flowplayer/VJS chrome (play/mute/FS) above the <video>. */
+  pointer-events: none !important;
+}
+
+/* Exit fullscreen → keep small-window online playback. Mounted only while FS. */
+.hxyrule-fs-exit {
+  position: absolute !important;
+  top: 14px !important;
+  right: 14px !important;
+  z-index: 2147483000 !important;
+  box-sizing: border-box !important;
+  width: 88px !important;
+  height: 88px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 2px solid rgba(255, 255, 255, 0.55) !important;
+  border-radius: 14px !important;
+  background: rgba(0, 0, 0, 0.35) !important;
+  color: #fff !important;
+  display: none !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+}
+
+.hxyrule-fs-exit__icon {
+  width: 44px !important;
+  height: 44px !important;
+  display: block !important;
+  pointer-events: none !important;
+}
+
+.hxyrule-fs-exit:hover {
+  color: #fff !important;
+  border-color: rgba(255, 255, 255, 0.85) !important;
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+html:fullscreen .hxyrule-online-player .hxyrule-fs-exit:not([hidden]),
+html:-webkit-full-screen .hxyrule-online-player .hxyrule-fs-exit:not([hidden]),
+.hxyrule-online-player:fullscreen .hxyrule-fs-exit:not([hidden]),
+.hxyrule-online-player:-webkit-full-screen .hxyrule-fs-exit:not([hidden]) {
+  display: flex !important;
+}
+
+.hxyrule-fs-exit[hidden] {
+  display: none !important;
+}
+
+.hxyrule-toolbar,
+.hxyrule-toolbar *,
+.hxyrule-filterbar,
+.hxyrule-filterbar *,
+.hxyrule-status,
+.hxyrule-status *,
+.hxyrule-pick,
+.hxyrule-pick *,
+.hxyrule-modal-backdrop,
+.hxyrule-modal-backdrop * {
+  box-sizing: border-box;
+}
+
+/* One weight for extension controls and native pagination/Jump controls moved
+ * into the toolbar. Native site selectors otherwise mix 400/500/600. */
+.hxyrule-topstack,
+.hxyrule-topstack *,
+.hxyrule-topstack button,
+.hxyrule-topstack input,
+.hxyrule-topstack select,
+.hxyrule-topstack .item,
+.hxyrule-topstack .item > a,
+.hxyrule-topstack .item > button {
+  font-weight: 600 !important;
+}
+
+.hxyrule-hide-native,
+#list_videos_my_favourite_videos input[data-action="select_all"],
+#list_videos_my_favourite_videos input[data-action="select_all"] + label,
+#list_videos_my_favourite_videos [data-action="delete"],
+#list_videos_my_favourite_videos [data-action="delete_multi"],
+#list_videos_my_favourite_videos [data-action="delete_selected"],
+#list_videos_my_favourite_videos [data-action="move_to_playlist"],
+#list_videos_my_favourite_videos [data-action="add_to_playlist"],
+#list_videos_my_favourite_videos [data-action="move_multi"],
+#list_videos_my_favourite_videos input[value="Delete selected"],
+#list_videos_my_favourite_videos input[value="Delete Selected"],
+#list_videos_my_favourite_videos input[value="Move to playlist"],
+#list_videos_my_favourite_videos input[value="Move to Playlist"],
+#list_videos_my_favourite_videos button[value="Delete selected"],
+#list_videos_my_favourite_videos button[value="Move to playlist"],
+.item.thumb.hxyrule-card input[name="delete[]"].hxyrule-hide-native,
+.item.thumb.hxyrule-card .hxyrule-hide-native {
+  display: none !important;
+}
+
+/*
+ * Hide native circle checkboxes immediately on favorites (before JS runs),
+ * so refresh / AJAX page changes do not flash the old control.
+ */
+#list_videos_my_favourite_videos .item.thumb input[name="delete[]"],
+#list_videos_my_favourite_videos .item.thumb input.checkbox[name="delete[]"],
+#list_videos_my_favourite_videos .item.thumb input[type="checkbox"][name="delete[]"],
+#list_videos_my_favourite_videos_items .item.thumb input[name="delete[]"],
+#list_videos_my_favourite_videos_items .item.thumb .checkbox-container,
+#list_videos_my_favourite_videos_items .item.thumb .checkmark,
+body:has(#list_videos_my_favourite_videos) .item.thumb > input[type="checkbox"],
+body:has(#list_videos_my_favourite_videos) .item.thumb input[name="delete[]"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  position: absolute !important;
+  left: -9999px !important;
+}
+
+/* Compact equal gaps between toolbar rows (Match → Sync → Jump). */
+:root {
+  --hxyrule-row-gap: 4px;
+  --hxyrule-step-height: 30px;
+}
+
+/* Favorites box: cards flush to top; no fat bottom gap */
+#list_videos_my_favourite_videos.hxyrule-fav-box,
+.hxyrule-fav-box,
+#list_videos_my_favourite_videos {
+  position: relative !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  overflow: visible !important;
+}
+
+/*
+ * Site uses .page__wrapper { min-height:100vh } + .page__main { flex:1 }
+ * and a tall .footer / ad spots — that is the huge blank under Jump.
+ * Collapse them on the favorites page only.
+ */
+body:has(.hxyrule-topstack) .page__wrapper,
+body:has(.hxyrule-topstack) .page-wrapper,
+html:has(.hxyrule-topstack) .page__wrapper {
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+body:has(.hxyrule-topstack) .page__main,
+body:has(.hxyrule-topstack) .main {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  padding-bottom: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+body:has(.hxyrule-topstack) .container--big,
+body:has(.hxyrule-topstack) .container {
+  padding-bottom: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+body:has(.hxyrule-topstack) .footer,
+body:has(.hxyrule-topstack) .page__footer,
+body:has(.hxyrule-topstack) .footer_spots,
+body:has(.hxyrule-topstack) .footer_holder,
+body:has(.hxyrule-topstack) .columns_spots,
+body:has(.hxyrule-topstack) .spots {
+  display: none !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: none !important;
+}
+
+/* Trim leftover site chrome under Jump row */
+body:has(#list_videos_my_favourite_videos) #list_videos_my_favourite_videos .bottom,
+body:has(#list_videos_my_favourite_videos) #list_videos_my_favourite_videos .holder-bottom,
+body:has(#list_videos_my_favourite_videos) #list_videos_my_favourite_videos .generic-button,
+body:has(#list_videos_my_favourite_videos) .hxyrule-hide-native-jump,
+body:has(.hxyrule-topstack) #list_videos_my_favourite_videos ~ .bottom,
+body:has(.hxyrule-topstack) #list_videos_my_favourite_videos ~ .holder-bottom {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#list_videos_my_favourite_videos_items,
+#list_videos_my_favourite_videos .thumbs,
+#list_videos_my_favourite_videos_items.thumbs,
+.hxyrule-thumbs-clear {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+/* Contain floated .item.thumb so the control stack sits below, not overlapping */
+.hxyrule-thumbs-clear::after {
+  content: '';
+  display: block;
+  clear: both;
+  height: 0;
+  visibility: hidden;
+}
+
+/* Native page title — kept for favorites; playlist uses inline+class nuke */
+.hxyrule-hide-native-headline {
+  display: none !important;
+}
+
+/* Fixed top toolbar: Match/View/Select → Sync/Queue/Index/Edit → Jump/Pages/status */
+.hxyrule-topstack {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: var(--hxyrule-row-gap, 4px) !important;
+  clear: both !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 4px 0 !important;
+  box-sizing: border-box !important;
+  float: none !important;
+  position: relative !important;
+}
+
+/* HXYRULE toolbar stays attached to the top of the browser viewport. */
+.hxyrule-topstack {
+  position: fixed !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: 0 !important;
+  bottom: auto !important;
+  z-index: 2147482000 !important;
+  width: 100vw !important;
+  max-height: calc(100vh - 12px) !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  padding: calc(4px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+    4px max(8px, env(safe-area-inset-left)) !important;
+  background: rgba(33, 43, 49, 0.97) !important;
+  border-top: none !important;
+  border-bottom: 1px solid #424c55 !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34) !important;
+  box-sizing: border-box !important;
+}
+
+/* Reserve live toolbar height + 3px card gap so cards never sit under it. */
+body:has(.hxyrule-topstack) {
+  padding-top: var(--hxyrule-fixed-toolbar-height, 128px) !important;
+  padding-bottom: 0 !important;
+  box-sizing: border-box !important;
+}
+
+/* Once the full native header has been moved below the card page branch, its
+ * own height provides the fixed-toolbar scroll clearance. Leaving the body's
+ * synthetic inset in place creates an unselectable blank block below it. */
+body:has(> .header[data-hxyrule-dark-panel-moved="1"]) {
+  padding-bottom: 0 !important;
+}
+
+/* Playlist's native skin may pin/order `.header` at the top even after the DOM
+ * node is moved. Only normalize the exact header marked by our playlist pass;
+ * all of its original children and interactive structure remain untouched. */
+body > .header[data-hxyrule-dark-panel-page="playlist"] {
+  position: relative !important;
+  inset: auto !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  float: none !important;
+  clear: both !important;
+  order: 2147483000 !important;
+  width: 100% !important;
+  transform: none !important;
+}
+
+/* Playlist toolbar: title + same compact row gaps as Favorites */
+.hxyrule-topstack--playlist {
+  gap: var(--hxyrule-row-gap, 4px) !important;
+  margin: 0 !important;
+  padding: calc(4px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+    4px max(8px, env(safe-area-inset-left)) !important;
+}
+
+/*
+ * Native "My Playlist NAME (n)" stays in page flow — keep links clickable and
+ * collapse the empty box height the site puts under the text.
+ */
+.hxyrule-topstack--playlist > .hxyrule-playlist-native-title,
+.hxyrule-playlist-native-title {
+  display: block !important;
+  visibility: visible !important;
+  align-self: flex-start !important;
+  width: 100% !important;
+  margin: 0 0 1px !important; /* title → Select = 1px */
+  padding: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  line-height: 1.25 !important;
+  overflow: visible !important;
+  font-size: inherit !important;
+  border: none !important;
+  box-sizing: border-box !important;
+}
+
+.hxyrule-topstack--playlist > .hxyrule-playlist-native-title .title,
+.hxyrule-topstack--playlist > .hxyrule-playlist-native-title h1,
+.hxyrule-topstack--playlist > .hxyrule-playlist-native-title h2,
+.hxyrule-topstack--playlist > .hxyrule-playlist-native-title a {
+  display: inline !important;
+  visibility: visible !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1.25 !important;
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+/* Duplicates left above cards / outside stack */
+.headline.hxyrule-hide-native-headline,
+div.headline.hxyrule-hide-native-headline,
+.hxyrule-fav-box .headline.hxyrule-hide-native-headline {
+  display: none !important;
+  height: 0 !important;
+  max-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  visibility: hidden !important;
+}
+
+/* Legacy plain-text clone — never show */
+.hxyrule-playlist-page-title {
+  display: none !important;
+}
+
+.hxyrule-topstack--playlist + .thumbs,
+.hxyrule-topstack--playlist + [id$="_items"],
+.hxyrule-fav-box > .hxyrule-topstack--playlist + * {
+  margin-top: 0 !important;
+}
+
+.hxyrule-topstack > * {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  flex: 0 0 auto;
+}
+
+.hxyrule-topstack--playlist > .hxyrule-playlist-page-title,
+.hxyrule-topstack--playlist > .hxyrule-playlist-native-title {
+  margin-bottom: 1px !important; /* title → Select */
+}
+
+/* Compact spacing from filter row through Jump. */
+.hxyrule-topstack--playlist > .hxyrule-controls {
+  gap: var(--hxyrule-row-gap, 4px) !important;
+  margin-bottom: 0 !important;
+}
+
+.hxyrule-topstack--playlist > .hxyrule-pagination-slot,
+.hxyrule-topstack--playlist > [id$="_pagination"] {
+  margin-bottom: 0 !important;
+}
+
+.hxyrule-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #8b9ba9;
+}
+
+.hxyrule-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--hxyrule-row-gap, 4px);
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #8b9ba9;
+}
+
+.hxyrule-pipeline {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+}
+
+/* Row 2: collection chip left · Sync · Queue · Index · Edit centered */
+.hxyrule-act-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  justify-content: stretch;
+  gap: 4px;
+  width: 100%;
+}
+
+.hxyrule-act-row > .hxyrule-favcount {
+  grid-column: 1;
+  justify-self: start;
+  align-self: center;
+  z-index: 2;
+}
+
+.hxyrule-act-row > .hxyrule-act-pipeline {
+  grid-column: 2;
+  justify-self: center;
+  align-self: center;
+  width: auto;
+  max-width: 100%;
+}
+
+.hxyrule-step {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  /* Adjacent tiles (no sep): 2px. With sep: gap on both sides + 1px line. */
+  gap: 2px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: 100%;
+  min-height: var(--hxyrule-step-height, 30px);
+  padding: 0 5px;
+  border-radius: 7px;
+  border: 1px solid #5a6670;
+  background: #2c3b48;
+  font-size: 12px;
+  line-height: 18px;
+  overflow: visible;
+}
+
+.hxyrule-step-name {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  margin: 0;
+  padding: 0 2px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: #aeb9c4;
+  white-space: nowrap;
+  background: transparent;
+}
+
+.hxyrule-chip-set {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Small controls: site-gray tiles (lighter than the large step panel). */
+.hxyrule-chip {
+  appearance: none;
+  margin: 0;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: #4d5b68;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  min-height: 30px;
+  height: 30px;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.hxyrule-chip:hover {
+  color: #fff;
+  background: #5f7080;
+}
+
+.hxyrule-chip.is-active,
+.hxyrule-chip.is-active:hover {
+  background: #ce5f5d;
+  border-color: transparent;
+  color: #fff;
+}
+
+.hxyrule-inline-range {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 2px;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.hxyrule-dur,
+.hxyrule-paren-field {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 1px;
+  padding: 5px 4px;
+  min-height: 30px;
+  height: 30px;
+  box-sizing: border-box;
+  border-radius: 4px;
+  background: #4d5b68;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.hxyrule-dur__label {
+  font-weight: 700;
+  margin-right: 0;
+  color: #fff;
+}
+
+.hxyrule-paren,
+.hxyrule-paren-sep {
+  color: #fff;
+  font-weight: 700;
+}
+
+.hxyrule-dur input,
+.hxyrule-paren-field input,
+.hxyrule-inline-range > input {
+  box-sizing: border-box;
+  width: 2.6em;
+  min-width: 2.6em;
+  height: 20px;
+  margin: 0;
+  padding: 0 1px;
+  border: none;
+  border-radius: 0;
+  border-bottom: none;
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: none;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.hxyrule-dur input:focus,
+.hxyrule-paren-field input:focus,
+.hxyrule-inline-range > input:focus {
+  outline: none;
+  border: none;
+  border-bottom: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Kill Chrome’s dark autofill / focus flash inside gray tiles. */
+.hxyrule-dur input:-webkit-autofill,
+.hxyrule-dur input:-webkit-autofill:hover,
+.hxyrule-dur input:-webkit-autofill:focus,
+.hxyrule-paren-field input:-webkit-autofill,
+.hxyrule-paren-field input:-webkit-autofill:hover,
+.hxyrule-paren-field input:-webkit-autofill:focus,
+.hxyrule-inline-range > input:-webkit-autofill,
+.hxyrule-inline-range > input:-webkit-autofill:hover,
+.hxyrule-inline-range > input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #fff !important;
+  caret-color: #fff;
+  transition: background-color 99999s ease-out;
+  box-shadow: 0 0 0 30px #4d5b68 inset !important;
+}
+
+.hxyrule-dur input::placeholder,
+.hxyrule-paren-field input::placeholder,
+.hxyrule-inline-range > input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+  font-weight: 600;
+}
+
+.hxyrule-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  height: 30px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: #4d5b68;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.hxyrule-field-compact {
+  padding: 5px 6px;
+}
+
+.hxyrule-field-label {
+  color: #aeb9c4;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.hxyrule-field-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.hxyrule-field-sep {
+  color: #aeb9c4;
+  font-size: 12px;
+}
+
+.hxyrule-field input {
+  box-sizing: border-box;
+  width: 3.2em;
+  min-width: 3.2em;
+  height: 20px;
+  margin: 0;
+  padding: 0 2px;
+  border: none;
+  border-radius: 0;
+  border-bottom: none;
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.hxyrule-pages-step {
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: 100%;
+}
+
+.hxyrule-pages-host {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: max-content;
+  max-width: 100%;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.hxyrule-pages-host > .hxyrule-pagination-slot,
+.hxyrule-pages-host > [id$="_pagination"] {
+  width: auto !important;
+  max-width: 100%;
+  margin: 0 !important;
+  float: none !important;
+}
+
+.hxyrule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.hxyrule-sep {
+  display: inline-block;
+  width: 1px;
+  /* Stretch top–bottom of the large step. No negative margin — with-sep
+   * neighbor distance is ~2× the plain 3px gap (3 + 1 + 3). */
+  align-self: stretch;
+  height: auto;
+  min-height: 100%;
+  margin: 0;
+  background: #5a6670;
+  flex: 0 0 auto;
+}
+
+.hxyrule-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #8b9ba9;
+}
+
+/* Toggle on: same red as site top My Favorites (`.button_fav.active` → #ce5f5d) */
+.hxyrule-controls .hxyrule-btn.is-active,
+.hxyrule-filterbar .hxyrule-btn.is-active,
+.hxyrule-controls .hxyrule-btn.is-active:hover,
+.hxyrule-filterbar .hxyrule-btn.is-active:hover {
+  background: #ce5f5d;
+  color: #fff;
+}
+
+.hxyrule-filter-dur {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 4px 7px;
+  font-size: 12px;
+  background: #4d5b68;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.hxyrule-filter-dur input {
+  width: 56px;
+  margin: 0;
+  padding: 4px 6px;
+  border: 1px solid #5a6670;
+  border-radius: 6px;
+  background: #2c3b48;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hxyrule-filter-unit {
+  opacity: 0.85;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.hxyrule-filter-status {
+  display: none !important;
+}
+
+.item.thumb.hxyrule-filtered-out .hxyrule-pick {
+  opacity: 0.38;
+  filter: grayscale(0.7);
+  cursor: not-allowed;
+}
+
+.item.thumb.hxyrule-filtered-out .hxyrule-pick:hover {
+  background: #2c3b48;
+  border-color: #3c464d;
+}
+
+.hxyrule-playlist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0 0 10px;
+  text-align: left;
+}
+
+.hxyrule-modal .hxyrule-playlist-option {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: #2c3b48;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hxyrule-modal .hxyrule-playlist-option:hover {
+  background: #354553;
+  color: #fff;
+}
+
+.hxyrule-modal .hxyrule-playlist-option.is-selected {
+  background: #ce5f5d;
+  border-color: #e08886;
+  color: #fff;
+}
+
+.hxyrule-modal .hxyrule-playlist-option input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  pointer-events: none;
+}
+
+.hxyrule-modal .hxyrule-playlist-option span {
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hxyrule-topstack .hxyrule-pagination-slot,
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination,
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"],
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  float: none !important;
+  clear: both !important;
+}
+
+/* Playlist pagination lives in Pages step on row 3 — no separate spacer. */
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item,
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .item,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .item {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.hxyrule-jumpbar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0 5px;
+  width: auto;
+  max-width: 100%;
+  min-height: var(--hxyrule-step-height, 30px);
+  box-sizing: border-box;
+  border-radius: 7px;
+  border: 1px solid #5a6670;
+  background: #2c3b48;
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+/* Full-width jump row: Jump left · Pages center · status right */
+.hxyrule-jumprow {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  min-height: 0;
+  clear: both;
+  float: none;
+}
+
+.hxyrule-favcount {
+  justify-self: start;
+  position: relative;
+  left: auto;
+  top: auto;
+  transform: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0 8px;
+  width: auto;
+  max-width: 100%;
+  min-height: var(--hxyrule-step-height, 30px);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  line-height: 18px;
+  background: #2c3b48;
+  border: 1px solid #5a6670;
+  border-radius: 7px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 1;
+}
+
+.hxyrule-jumprow > .hxyrule-pagination-slot {
+  grid-column: 2;
+  justify-self: center;
+  width: auto !important;
+  max-width: 100%;
+}
+
+.hxyrule-jumprow > .hxyrule-pagination-slot .pagination {
+  width: auto !important;
+}
+
+.hxyrule-jumpbar .hxyrule-paren-field {
+  min-height: 0;
+}
+
+.hxyrule-jumpbar .hxyrule-paren-field input {
+  width: 3.2em;
+  min-width: 3.2em;
+}
+
+.hxyrule-hide-native-jump {
+  display: none !important;
+}
+
+.hxyrule-btn {
+  appearance: none;
+  border: none;
+  background: #4d5b68;
+  color: #fff;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  min-height: 30px;
+  height: 30px;
+  cursor: pointer;
+  transition: background 0.15s;
+  text-transform: none;
+  white-space: nowrap;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+}
+
+/* Modal / non-segmented surfaces keep solid buttons. */
+.hxyrule-modal .hxyrule-btn,
+.hxyrule-modal-backdrop .hxyrule-btn {
+  background: #4d5b68;
+  border-radius: 6px;
+  min-height: 32px;
+  height: auto;
+  padding: 6px 12px;
+}
+
+.hxyrule-modal .hxyrule-btn:hover,
+.hxyrule-modal-backdrop .hxyrule-btn:hover {
+  background: #5f7080;
+}
+
+.hxyrule-step > .hxyrule-btn,
+.hxyrule-jumpbar > .hxyrule-btn,
+.hxyrule-inline-range > .hxyrule-btn {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+}
+
+.hxyrule-topstack,
+.hxyrule-topstack .hxyrule-btn,
+.hxyrule-topstack .hxyrule-chip,
+.hxyrule-topstack .hxyrule-step-name,
+.hxyrule-topstack .hxyrule-field,
+.hxyrule-topstack .hxyrule-field-label,
+.hxyrule-topstack .hxyrule-field-sep,
+.hxyrule-topstack .hxyrule-filter-unit,
+.hxyrule-topstack .hxyrule-dur,
+.hxyrule-topstack .hxyrule-paren,
+.hxyrule-topstack .hxyrule-paren-sep,
+.hxyrule-topstack .hxyrule-favcount,
+.hxyrule-topstack .hxyrule-msgbar,
+.hxyrule-topstack .hxyrule-error,
+.hxyrule-topstack .hxyrule-jumpbar,
+.hxyrule-topstack input {
+  font-size: 12px !important;
+}
+
+.hxyrule-topstack .hxyrule-btn {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  height: 30px;
+  min-height: 30px;
+  padding: 5px 10px;
+  line-height: 20px;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.hxyrule-topstack .hxyrule-chip {
+  height: 30px;
+  min-height: 30px;
+  padding: 5px 10px;
+  line-height: 20px;
+  box-sizing: border-box;
+}
+
+.hxyrule-topstack .hxyrule-btn[data-act="scan"] {
+  min-width: 152px;
+}
+
+.hxyrule-action-groups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.hxyrule-action-group {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.hxyrule-action-group--left,
+.hxyrule-action-group--right {
+  justify-content: center;
+}
+
+.hxyrule-action-divider {
+  display: none;
+}
+
+/* Native pagination varies by site skin; its assigned slot is the stable hook. */
+.hxyrule-topstack .hxyrule-pagination-slot,
+.hxyrule-topstack .hxyrule-pagination-slot .pagination {
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  line-height: 20px !important;
+  box-sizing: border-box !important;
+}
+
+.hxyrule-topstack .hxyrule-pagination-slot .item,
+.hxyrule-topstack .hxyrule-pagination-slot .item > a,
+.hxyrule-topstack .hxyrule-pagination-slot .item > button,
+.hxyrule-topstack .hxyrule-pagination-slot a.item,
+.hxyrule-topstack .hxyrule-pagination-slot button.item {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: auto !important;
+  min-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  margin: 0 1px !important;
+  padding: 5px 10px !important;
+  font-size: 12px !important;
+  line-height: 20px !important;
+  box-sizing: border-box !important;
+  border-radius: 4px !important;
+}
+
+/* One visual rhythm for HXYRULE buttons plus the site's native pagination. */
+.hxyrule-topstack .hxyrule-filter-dur,
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item,
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item > *,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item > * {
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  font-size: 12px !important;
+  line-height: 20px !important;
+  box-sizing: border-box !important;
+  border-radius: 4px !important;
+}
+
+.hxyrule-topstack .hxyrule-filter-dur {
+  padding-top: 4px !important;
+  padding-bottom: 4px !important;
+}
+
+/* Site skin gives pagination large square dimensions; override every clickable layer. */
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: auto !important;
+  min-width: 30px !important;
+  padding: 0 !important;
+  margin: 0 1px !important;
+  border-radius: 4px !important;
+  background: #4d5b68 !important;
+  background-color: #4d5b68 !important;
+  color: #fff !important;
+}
+
+/* Numeric shells stay transparent — fill lives on the inner chrome / green mark. */
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item.hxyrule-page-shell,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item.hxyrule-page-shell {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.hxyrule-topstack .hxyrule-filter-dur *,
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item::before,
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item::after,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item::before,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item::after {
+  font-size: 12px !important;
+}
+
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item > *,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item > * {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: auto !important;
+  min-width: 30px !important;
+  padding: 5px 10px !important;
+  margin: 0 !important;
+  border-radius: 4px !important;
+  background: #4d5b68 !important;
+  background-color: #4d5b68 !important;
+}
+
+/* Green all-local pages stay via JS inline styles; keep CSS from fighting them. */
+.hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item > *.hxyrule-page-local,
+.hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item > *.hxyrule-page-local {
+  background: #6fae8f !important;
+  background-color: #6fae8f !important;
+}
+
+.hxyrule-topstack .hxyrule-filter-dur input {
+  font-size: 12px !important;
+  box-sizing: border-box !important;
+}
+
+/* Duration's min/max boxes should nearly fill, but not equal, the 30px pill. */
+.hxyrule-topstack .hxyrule-filter-dur input {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  max-height: 26px !important;
+  padding: 0 6px !important;
+  line-height: 26px !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+
+/* Match site `.button_fav:hover` — slight lift */
+.hxyrule-btn:hover {
+  background: #5f7080;
+  color: #fff;
+}
+
+.hxyrule-btn:disabled,
+.hxyrule-btn:disabled:hover {
+  background: #4d5b68;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.hxyrule-btn--primary {
+  background: #6fae8f;
+  color: #fff;
+}
+
+.hxyrule-btn--primary:hover {
+  background: #7fbe9f;
+}
+
+.hxyrule-btn--accent {
+  background: #4a5d6d;
+  color: #fff;
+}
+
+.hxyrule-btn--accent:hover {
+  background: #5a7082;
+}
+
+.hxyrule-controls .hxyrule-btn-pair {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 2px;
+}
+
+.hxyrule-controls .hxyrule-btn-pair [hidden] {
+  display: none !important;
+}
+
+/* View segmented control — solid active state */
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn {
+  background: #3f4c58;
+  color: #d7dee6;
+  font-weight: 700;
+}
+
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn:hover {
+  background: #516273;
+  color: #fff;
+}
+
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn.is-active-view,
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn.is-active-view:hover {
+  background: #ce5f5d;
+  color: #fff;
+  box-shadow: none;
+}
+
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn:disabled,
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn:disabled:hover {
+  background: #3f4c58;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn.is-active-view:disabled,
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn.is-active-view:disabled:hover {
+  background: #ce5f5d;
+}
+
+.hxyrule-btn--danger {
+  background: #ce5f5d;
+  color: #fff;
+}
+
+.hxyrule-btn--danger:hover {
+  background: #e08886;
+}
+
+.hxyrule-btn--ghost {
+  background: #4d5b68;
+  border: none;
+  color: #fff;
+}
+
+.hxyrule-btn--ghost:hover {
+  background: #5f7080;
+  color: #fff;
+}
+
+.hxyrule-btn--muted {
+  color: #fff;
+}
+
+/* Toolbar copy: white everywhere except step titles + input placeholders. */
+.hxyrule-topstack .hxyrule-btn,
+.hxyrule-topstack .hxyrule-chip,
+.hxyrule-topstack .hxyrule-dur,
+.hxyrule-topstack .hxyrule-dur__label,
+.hxyrule-topstack .hxyrule-paren,
+.hxyrule-topstack .hxyrule-paren-sep,
+.hxyrule-topstack .hxyrule-paren-field,
+.hxyrule-topstack .hxyrule-favcount,
+.hxyrule-topstack .hxyrule-msgbar,
+.hxyrule-topstack .hxyrule-error,
+.hxyrule-topstack .hxyrule-jumpbar,
+.hxyrule-topstack .hxyrule-filter-unit,
+.hxyrule-topstack input {
+  color: #fff !important;
+}
+
+.hxyrule-topstack .hxyrule-step-name {
+  color: #aeb9c4 !important;
+}
+
+.hxyrule-topstack input::placeholder {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+/* Row 3: Jump left · Pages center · status right */
+.hxyrule-jumprow > .hxyrule-jumpbar {
+  grid-column: 1;
+  justify-self: start;
+  align-self: center;
+}
+
+.hxyrule-jumprow > .hxyrule-pages-step {
+  grid-column: 2;
+  justify-self: center;
+  align-self: center;
+}
+
+/* Playlist detail: hide native round checkboxes once HXYRULE pick rail is on */
+.item.thumb.hxyrule-card input[name="delete[]"],
+.item.thumb.hxyrule-card input.checkbox[name="delete[]"],
+.item.thumb.hxyrule-card .checkbox-container,
+.item.thumb.hxyrule-card .checkmark {
+  display: none !important;
+}
+
+.hxyrule-toolbar--playlist {
+  margin: 8px 0 12px;
+}
+
+.hxyrule-msgbar,
+.hxyrule-error {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  height: var(--hxyrule-step-height, 30px);
+  min-height: var(--hxyrule-step-height, 30px);
+  margin: 0;
+  padding: 0 8px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: var(--hxyrule-step-height, 30px);
+  letter-spacing: 0.02em;
+  color: #fff;
+  border-radius: 7px;
+  border: 1px solid #5a6670;
+  background: #2c3b48;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: block;
+  cursor: pointer;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hxyrule-msgbar:hover,
+.hxyrule-error:hover {
+  border-color: #7a8494;
+  background: #334655;
+}
+
+.hxyrule-msgbar.is-error,
+.hxyrule-error.is-error {
+  border-color: #bd676d;
+  background: #4a3034;
+}
+
+.hxyrule-msgbar::-webkit-scrollbar,
+.hxyrule-error::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.hxyrule-msgbar .hxyrule-message-text,
+.hxyrule-error .hxyrule-message-text {
+  display: inline-block;
+  white-space: nowrap;
+  line-height: var(--hxyrule-step-height, 30px);
+  vertical-align: top;
+}
+
+.hxyrule-jumprow > .hxyrule-msgbar,
+.hxyrule-jumprow > .hxyrule-error {
+  grid-column: 3;
+  justify-self: end;
+  align-self: center;
+  flex: none;
+  /* Cap to the right column so long status scrolls instead of covering Pages. */
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  min-height: var(--hxyrule-step-height, 30px);
+}
+
+.hxyrule-status-dialog {
+  width: min(760px, calc(100vw - 40px));
+  max-height: min(70vh, 640px);
+  padding: 0;
+  color: #f1f1f1;
+  border: 1px solid #777b84;
+  border-radius: 6px;
+  background: #34353b;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 60%);
+  font-size: 14px;
+}
+
+.hxyrule-status-dialog::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+
+.hxyrule-status-dialog form {
+  display: flex;
+  flex-direction: column;
+  max-height: min(70vh, 640px);
+  box-sizing: border-box;
+  padding: 18px;
+}
+
+.hxyrule-dialog-title {
+  margin-bottom: 14px;
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.hxyrule-status-log {
+  flex: 1 1 auto;
+  min-height: 220px;
+  max-height: min(52vh, 480px);
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid #555861;
+  border-radius: 6px;
+  background: #242830;
+  color: #d7dde6;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: normal;
+}
+
+.hxyrule-status-line {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
+}
+
+.hxyrule-status-line:last-child {
+  border-bottom: 0;
+}
+
+.hxyrule-status-time {
+  color: #8b95a3;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hxyrule-status-body {
+  display: block;
+  color: #e8edf3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.hxyrule-status-line.is-error .hxyrule-status-body {
+  color: #ffb4b8;
+}
+
+.hxyrule-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn {
+  padding: 6px 12px;
+  border: 1px solid #6a6f79;
+  border-radius: 5px;
+  background: #4a4f59;
+  color: #f1f1f1;
+  height: auto;
+  min-height: 30px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn:hover {
+  background: #585e6a;
+}
+
+/* Site uses .thumb{padding:0 10px 20px} for row gaps — override that, not just margin. */
+#list_videos_my_favourite_videos .item.thumb.hxyrule-card,
+#list_videos_my_favourite_videos_items .item.thumb.hxyrule-card,
+.thumbs .item.thumb.hxyrule-card,
+.item.thumb.hxyrule-card {
+  position: relative;
+  margin: 0 !important;
+  /* bottom 0 so cards→Scan gap equals stack gap only */
+  padding: 0 10px 0 !important;
+}
+
+.item.thumb.hxyrule-card > input[type="checkbox"],
+.item.thumb.hxyrule-card input.checkbox[name="delete[]"],
+.item.thumb.hxyrule-card input[name="delete[]"],
+.item.thumb.hxyrule-card .checkbox-container,
+.item.thumb.hxyrule-card .checkmark,
+.item.thumb.hxyrule-card label.checkbox,
+.item.thumb.hxyrule-card .custom-checkbox {
+  display: none !important;
+}
+
+/* Thumbnail link only keeps the image — play target */
+.item.thumb.hxyrule-card > a.th {
+  display: block;
+  margin: 0;
+}
+
+/*
+ * Pick panel: title + meta + download status.
+ * Click anywhere here to toggle select (except .hxyrule-path).
+ * Selected = warm amber rim on dark slate (no cyan) so sage path stays readable.
+ */
+.hxyrule-pick {
+  display: block;
+  width: 100%;
+  margin: 1px 0 0;
+  padding: 10px 10px 9px;
+  border: 1px solid #3c464d;
+  border-radius: 8px;
+  cursor: pointer;
+  background: #2c3b48;
+  color: #8b9ba9;
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+  text-align: left;
+  position: static;
+  min-height: 0;
+  height: auto;
+}
+
+.hxyrule-pick:hover {
+  background: #334554;
+  border-color: #4f5b66;
+}
+
+.hxyrule-pick.is-on,
+.item.thumb.hxyrule-picked .hxyrule-pick {
+  background: #2a3036;
+  border-color: #c9a86c;
+  box-shadow: inset 0 0 0 1px rgba(201, 168, 108, 0.22);
+}
+
+.item.thumb.hxyrule-picked {
+  outline: none;
+}
+
+.hxyrule-pick .thumb_title {
+  color: #fff !important;
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+  font-weight: 600 !important;
+  margin: 0 0 4px !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.hxyrule-pick .thumb_info {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: #8b9ba9;
+  margin: 0 0 4px !important;
+  pointer-events: none;
+}
+
+.hxyrule-pick .thumb_info .added,
+.hxyrule-pick .thumb_info .rating,
+.hxyrule-pick .thumb_info .views {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 !important;
+}
+
+.hxyrule-status {
+  display: block;
+  position: static;
+  margin: 2px 0 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8b9ba9;
+  line-height: 1.3;
+  overflow: hidden;
+  width: 100%;
+}
+
+.hxyrule-status--missing {
+  color: #8b9ba9;
+  pointer-events: none;
+}
+
+.hxyrule-status--pending {
+  color: #737c90;
+  font-style: italic;
+  font-weight: 400;
+  pointer-events: none;
+}
+
+.hxyrule-status--local,
+.hxyrule-status--local .hxyrule-status__label {
+  color: #b4e6c8;
+}
+
+.hxyrule-path {
+  color: #b4e6c8;
+  text-decoration: none;
+  cursor: pointer;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: auto;
+  background: none;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  text-shadow: none;
+}
+
+.hxyrule-path:hover {
+  color: #d2f5e0;
+  text-decoration: underline;
+  background: none;
+  border: none;
+}
+
+/*
+ * Pagination colors/layout are applied via inline styles in favorites.js
+ * (site `.item.active a { background:#ce5f5d }` otherwise wins).
+ * Keep only structural helpers here.
+ */
+#list_videos_my_favourite_videos_pagination .hxyrule-page-miss[hidden] {
+  display: none !important;
+}
+
+.hxyrule-status__label {
+  display: none;
+}
+
+.hxyrule-status__row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.hxyrule-status__row .hxyrule-path {
+  flex: 1;
+  min-width: 0;
+}
+
+.hxyrule-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hxyrule-modal {
+  width: min(480px, calc(100vw - 24px));
+  background: #292f34;
+  border: 1px solid #424c55;
+  border-radius: 10px;
+  padding: 16px;
+  color: #cfd6dd;
+}
+
+.hxyrule-modal--orphan {
+  width: min(640px, calc(100vw - 24px));
+  font-size: 14px;
+}
+
+.hxyrule-modal--orphan h3 {
+  font-size: 18px;
+}
+
+.hxyrule-modal--orphan .hxyrule-playlist-option {
+  font-size: 14px;
+}
+
+.hxyrule-modal--orphan .hxyrule-modal__actions .hxyrule-btn {
+  font-size: 13px;
+}
+
+.hxyrule-modal--orphan .hxyrule-orphan-open {
+  font-size: 13px !important;
+}
+
+.hxyrule-modal-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #8b9ba9;
+  line-height: 1.4;
+}
+
+.hxyrule-orphan-actions {
+  gap: 4px;
+  margin-top: 10px;
+  align-items: center;
+}
+
+.hxyrule-modal--orphan .hxyrule-orphan-actions .hxyrule-btn {
+  min-height: 28px;
+  height: 28px;
+  padding: 4px 8px;
+  border-radius: 5px;
+}
+
+.hxyrule-orphan-list {
+  max-height: min(420px, 55vh);
+  margin: 0;
+}
+
+.hxyrule-orphan-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: calc(var(--orphan-depth, 0) * 16px);
+}
+
+.hxyrule-orphan-row[hidden] {
+  display: none !important;
+}
+
+.hxyrule-orphan-row .hxyrule-playlist-option {
+  flex: 1;
+  min-width: 0;
+}
+
+.hxyrule-orphan-open {
+  flex: 0 0 auto;
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  min-width: 52px;
+}
+
+.hxyrule-orphan-caret {
+  display: inline-block;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: 1;
+  margin-left: 1px;
+}
+
+.hxyrule-modal .hxyrule-orphan-dir span {
+  opacity: 0.92;
+  font-style: italic;
+}
+
+.hxyrule-modal h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  color: #fff;
+}
+
+.hxyrule-modal label {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 13px;
+  color: #8b9ba9;
+}
+
+.hxyrule-modal input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #424c55;
+  border-radius: 8px;
+  background: #212b31;
+  color: #fff;
+}
+
+/* Gray ±10 defaults; typed values stay white via `color` above. */
+.hxyrule-modal input::placeholder {
+  color: #8b9ba9;
+  opacity: 1;
+}
+
+.hxyrule-modal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  justify-content: flex-end;
+}
+
+.hxyrule-modal__actions .hxyrule-btn--primary {
+  background: #424c55;
+}
+
+.hxyrule-modal__actions .hxyrule-btn--primary:hover {
+  background: #4d5b68;
+}
+
+.hxyrule-modal__actions .hxyrule-btn--warn {
+  background: #424c55;
+}
+
+.hxyrule-modal__actions .hxyrule-btn--warn:hover {
+  background: #4d5b68;
+}
+
+@media (max-width: 720px) {
+  .hxyrule-toolbar,
+  .hxyrule-filterbar,
+  .hxyrule-controls .hxyrule-pipeline,
+  .hxyrule-act-pipeline {
+    flex-wrap: nowrap;
+  }
+  .hxyrule-btn {
+    font-size: 13px;
+    padding: 8px 10px;
+  }
+  .hxyrule-topstack .hxyrule-btn {
+    width: auto;
+    font-size: 12px;
+    padding: 5px 10px;
+  }
+}

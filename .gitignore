@@ -1,0 +1,13 @@
+.ref-HXYLIVE/
+.proxyenv
+.tools/
+.ssh-deploy/
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+*.log
+.pairing_token
+*.b64
+*.b64.part*

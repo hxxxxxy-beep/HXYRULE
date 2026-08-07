@@ -1,0 +1,19 @@
+/* Prefer the locally installed Source Han Serif family on every page.
+ * Noto Serif CJK SC is the same glyph family under its alternate name;
+ * Songti SC is the macOS fallback when Source Han is not installed. */
+@font-face {
+  font-family: 'HXY Source Han Serif';
+  src: local('Source Han Serif CN'), local('SourceHanSerifCN-SemiBold'),
+    local('Source Han Serif SC'), local('思源宋体 CN'), local('思源宋体'),
+    local('Noto Serif CJK SC'), local('Noto Serif SC'), local('Songti SC');
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+html,
+html body,
+html body *:not([class*='icon' i]):not([class*='glyph' i]):not(.fa):not(.fas):not(.far):not(.fab):not(.fal):not(.fad):not(.material-icons):not(.material-icons-outlined):not(.material-icons-round):not(.material-icons-sharp):not(.material-symbols-outlined):not(.material-symbols-rounded):not(.material-symbols-sharp):not(.vjs-control):not(.vjs-big-play-button):not(.jw-icon):not(.fp-ui):not(.fp-controls):not(.plyr__control):not([data-plyr]):not(.video-js *):not(.flowplayer *):not(.fp-player *):not(.jwplayer *):not(.plyr *):not(.kt-player *):not(.kt_player *) {
+  font-family: 'HXY Source Han Serif', 'Source Han Serif CN', 'Source Han Serif SC', 'Noto Serif CJK SC',
+    'Noto Serif SC', 'Songti SC', serif !important;
+}
