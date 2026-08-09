@@ -56,12 +56,15 @@ QUEUE_STATUSES = (
     "pending",
     "waiting",
     "downloading",
+    "paused",
     "completed",
     "failed",
     "skipped",
     "exists",
     "cancelled",
 )
+# Active rows shown in the Tasks dialog (finished statuses are omitted).
+QUEUE_TASK_STATUSES = ("pending", "waiting", "downloading", "paused", "failed")
 
 
 def utc_now() -> int:
@@ -543,7 +546,9 @@ class Store:
             if status == "downloading" and current is None:
                 current = self._public_queue_item(row)
         pending_like = [
-            r for r in rows if r["status"] in ("pending", "waiting", "downloading", "failed")
+            r
+            for r in rows
+            if r["status"] in ("pending", "waiting", "downloading", "paused", "failed")
         ]
         total = len(rows)
         completed = counts.get("completed", 0) + counts.get("skipped", 0) + counts.get("exists", 0)
@@ -697,12 +702,240 @@ class Store:
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE download_queue SET status = 'cancelled', finished_at = ?, error = '' "
-                "WHERE status IN ('pending','waiting','failed','downloading')",
+                "WHERE status IN ('pending','waiting','failed','downloading','paused')",
                 (utc_now(),),
             )
             self._conn.commit()
             self.set_meta("queue_paused", "0")
             return cur.rowcount
+
+    def queue_list(self, data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Active download-queue items for the Tasks dialog."""
+        include_done = bool((data or {}).get("includeDone"))
+        snap = self.queue_snapshot()
+        items = []
+        for item in snap.get("items") or []:
+            st = str(item.get("status") or "")
+            if st in QUEUE_TASK_STATUSES or (
+                include_done and st in ("completed", "skipped", "exists", "cancelled")
+            ):
+                items.append(item)
+        downloading = [i for i in items if i.get("status") == "downloading"]
+        paused_items = [i for i in items if i.get("status") == "paused"]
+        rest = [i for i in items if i.get("status") not in ("downloading", "paused")]
+        return {
+            "paused": bool(snap.get("paused")),
+            "hasPausedItems": bool(paused_items),
+            "hasDownloading": bool(downloading),
+            "counts": snap.get("counts") or {},
+            "activeCount": int(snap.get("activeCount") or 0),
+            "items": downloading + paused_items + rest,
+        }
+
+    def _normalize_queue_ids(self, ids: Any, *, action: str) -> list[int]:
+        if not isinstance(ids, list):
+            raise ValueError("ids must be a list")
+        try:
+            parsed = [int(x) for x in ids]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ids must be integers") from exc
+        seen: set[int] = set()
+        wanted: list[int] = []
+        for item_id in parsed:
+            if item_id <= 0 or item_id in seen:
+                continue
+            seen.add(item_id)
+            wanted.append(item_id)
+        if not wanted:
+            raise ValueError(f"ids required to {action}")
+        return wanted
+
+    def queue_pause_live(self, ids: list[Any] | None = None) -> dict[str, Any]:
+        """Pause in-flight downloads; queued rows stay claimable so the next item takes the slot.
+
+        When ``ids`` is provided, only those downloading rows pause. When omitted, all
+        downloading rows pause (legacy / bulk).
+        """
+        chrome_ids: list[int] = []
+        paused_items: list[dict[str, Any]] = []
+        wanted: list[int] | None = None
+        if ids is not None:
+            wanted = self._normalize_queue_ids(ids, action="pause")
+        with self._lock:
+            if wanted is None:
+                rows = [
+                    dict(r)
+                    for r in self._conn.execute(
+                        "SELECT * FROM download_queue WHERE status = 'downloading' "
+                        "ORDER BY sort_key ASC, id ASC"
+                    ).fetchall()
+                ]
+            else:
+                placeholders = ",".join("?" for _ in wanted)
+                rows = [
+                    dict(r)
+                    for r in self._conn.execute(
+                        f"SELECT * FROM download_queue WHERE status = 'downloading' "
+                        f"AND id IN ({placeholders}) ORDER BY sort_key ASC, id ASC",
+                        wanted,
+                    ).fetchall()
+                ]
+            if not rows:
+                raise ValueError("nothing downloading to pause")
+            for row in rows:
+                chrome_id = row.get("chrome_download_id")
+                if chrome_id:
+                    chrome_ids.append(int(chrome_id))
+                self._conn.execute(
+                    "UPDATE download_queue SET status = 'paused', error = 'paused', "
+                    "chrome_download_id = NULL, finished_at = NULL WHERE id = ?",
+                    (row["id"],),
+                )
+                paused_items.append(
+                    self._public_queue_item(
+                        {
+                            **row,
+                            "status": "paused",
+                            "error": "paused",
+                            "chrome_download_id": None,
+                            "finished_at": None,
+                        }
+                    )
+                )
+            self._conn.commit()
+        listed = self.queue_list({})
+        return {
+            "pausedItems": paused_items,
+            "chromeDownloadIds": chrome_ids,
+            "items": listed.get("items") or [],
+            "hasPausedItems": bool(listed.get("hasPausedItems")),
+            "hasDownloading": bool(listed.get("hasDownloading")),
+        }
+
+    def queue_resume_paused(self, ids: list[Any] | None = None) -> dict[str, Any]:
+        """Return paused rows to pending so the worker can claim them again.
+
+        When ``ids`` is provided, only those paused rows resume. When omitted, all
+        paused rows resume (legacy / bulk).
+        """
+        wanted: list[int] | None = None
+        if ids is not None:
+            wanted = self._normalize_queue_ids(ids, action="resume")
+        with self._lock:
+            if wanted is None:
+                rows = [
+                    dict(r)
+                    for r in self._conn.execute(
+                        "SELECT * FROM download_queue WHERE status = 'paused' "
+                        "ORDER BY sort_key ASC, id ASC"
+                    ).fetchall()
+                ]
+            else:
+                placeholders = ",".join("?" for _ in wanted)
+                rows = [
+                    dict(r)
+                    for r in self._conn.execute(
+                        f"SELECT * FROM download_queue WHERE status = 'paused' "
+                        f"AND id IN ({placeholders}) ORDER BY sort_key ASC, id ASC",
+                        wanted,
+                    ).fetchall()
+                ]
+            if not rows:
+                raise ValueError("nothing paused to resume")
+            # Prefer resumed items ahead of ordinary queued work.
+            min_row = self._conn.execute(
+                "SELECT MIN(sort_key) AS m FROM download_queue "
+                "WHERE status IN ('pending','waiting','downloading','paused','failed')"
+            ).fetchone()
+            base = int(min_row["m"] if min_row and min_row["m"] is not None else 0) - len(rows)
+            for index, row in enumerate(rows):
+                self._conn.execute(
+                    "UPDATE download_queue SET status = 'pending', error = '', "
+                    "chrome_download_id = NULL, finished_at = NULL, started_at = NULL, "
+                    "sort_key = ? WHERE id = ?",
+                    (base + index, row["id"]),
+                )
+            self._conn.commit()
+        listed = self.queue_list({})
+        return {
+            "resumed": len(rows),
+            "items": listed.get("items") or [],
+            "hasPausedItems": bool(listed.get("hasPausedItems")),
+            "hasDownloading": bool(listed.get("hasDownloading")),
+        }
+
+    def queue_remove(self, item_id: int) -> dict[str, Any]:
+        """Cancel one active queue item. Returns chromeDownloadId for the worker to abort."""
+        item_id = int(item_id or 0)
+        if item_id <= 0:
+            raise ValueError("id is required")
+        item = self.get_queue_item(item_id)
+        if not item:
+            raise FileNotFoundError("queue item not found")
+        st = str(item.get("status") or "")
+        if st not in QUEUE_TASK_STATUSES:
+            raise ValueError("queue item is not active")
+        chrome_id = item.get("chromeDownloadId")
+        updated = self.update_queue_item(
+            item_id,
+            status="cancelled",
+            error="removed",
+            finishedAt=utc_now(),
+            chromeDownloadId=None,
+        )
+        listed = self.queue_list({})
+        return {
+            "item": updated or {**item, "status": "cancelled", "error": "removed"},
+            "chromeDownloadId": chrome_id,
+            "remaining": len(listed.get("items") or []),
+            "paused": bool(listed.get("paused")),
+            "hasPausedItems": bool(listed.get("hasPausedItems")),
+            "hasDownloading": bool(listed.get("hasDownloading")),
+        }
+
+    def queue_reorder(self, ids: list[Any]) -> dict[str, Any]:
+        """Reorder active download items. ids must list every task-status item once."""
+        if not isinstance(ids, list) or not ids:
+            raise ValueError("ids must be a non-empty list")
+        try:
+            wanted = [int(x) for x in ids]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ids must be integers") from exc
+        if len(wanted) != len(set(wanted)):
+            raise ValueError("ids must be unique")
+        with self._lock:
+            rows = [
+                dict(r)
+                for r in self._conn.execute(
+                    "SELECT * FROM download_queue WHERE status IN "
+                    "('pending','waiting','downloading','paused','failed') "
+                    "ORDER BY sort_key ASC, id ASC"
+                ).fetchall()
+            ]
+            active_by_id = {int(r["id"]): r for r in rows}
+            if set(wanted) != set(active_by_id):
+                raise ValueError("ids must match the active download queue")
+            # Keep in-flight + paused downloads pinned at the front.
+            live_ids = [
+                int(r["id"]) for r in rows if r["status"] in ("downloading", "paused")
+            ]
+            if live_ids:
+                rest = [i for i in wanted if i not in set(live_ids)]
+                # Preserve current live/paused order from DB, not the client payload.
+                wanted = live_ids + rest
+            for index, item_id in enumerate(wanted):
+                self._conn.execute(
+                    "UPDATE download_queue SET sort_key = ? WHERE id = ?",
+                    (index, item_id),
+                )
+            self._conn.commit()
+        listed = self.queue_list({})
+        return {
+            "items": listed.get("items") or [],
+            "paused": bool(listed.get("paused")),
+            "hasPausedItems": bool(listed.get("hasPausedItems")),
+            "hasDownloading": bool(listed.get("hasDownloading")),
+        }
 
     def clear_finished_queue(self) -> int:
         """Remove finished/cancelled rows so the counter can reset."""
@@ -712,13 +945,6 @@ class Store:
                 "('completed','skipped','exists','cancelled')"
             )
             self._conn.commit()
-            return cur.rowcount
-
-    def purge_queue(self) -> int:
-        with self._lock:
-            cur = self._conn.execute("DELETE FROM download_queue")
-            self._conn.commit()
-            self.set_meta("queue_paused", "0")
             return cur.rowcount
 
 
@@ -914,11 +1140,12 @@ class Helper:
                 "directory": str(root),
                 "scanSource": source,
             }
+            # Omit absolutePath from the wire payload (still stored in SQLite).
+            # Extension messaging + options fetch choke on ~1MB full-path maps.
             matches = {
                 vid: {
                     "videoId": vid,
                     "relativePath": entry["relative_path"],
-                    "absolutePath": entry["absolute_path"],
                     "displayPath": self._display_path(entry["absolute_path"]),
                     "size": entry["size"],
                 }
@@ -1728,43 +1955,6 @@ class Helper:
         result["removedPartials"] = self._cleanup_video_partials_locked(video_id)
         return result
 
-    def wait_stable_file(self, filename: str, expected_size: int = 0, timeout: int = 30) -> dict[str, Any]:
-        if not filename or "/" in filename or "\\" in filename:
-            raise ValueError("filename must be a basename")
-        root = self._refresh_video_dir()
-        path = root / filename
-        deadline = time.time() + timeout
-        last = None
-        stable = 0
-        while time.time() < deadline:
-            if (root / f"{filename}.crdownload").exists():
-                stable = 0
-                time.sleep(0.5)
-                continue
-            if not path.exists() or self._is_incomplete(path):
-                stable = 0
-                time.sleep(0.5)
-                continue
-            size = path.stat().st_size
-            if size <= 0:
-                stable = 0
-                time.sleep(0.5)
-                continue
-            if expected_size > 0 and size != expected_size:
-                last = size
-                stable = 0
-                time.sleep(0.5)
-                continue
-            if last == size:
-                stable += 1
-            else:
-                last = size
-                stable = 1
-            if stable >= 3:
-                return {"ready": True, "size": size, "filename": filename}
-            time.sleep(0.5)
-        return {"ready": False, "size": last or 0, "filename": filename}
-
     def recover_partial_download(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Finish one interrupted Chrome partial via validated HTTP Range."""
         video_id = str(payload.get("videoId") or "").strip()
@@ -1946,6 +2136,10 @@ def make_handler(helper: Helper):
             elif not origin:
                 # Token-authenticated same-machine calls without Origin.
                 self.send_header("Access-Control-Allow-Origin", helper.allowed_origin)
+            elif origin.startswith("chrome-extension://"):
+                # Let the extension page read auth/origin error JSON instead of
+                # an opaque browser "Failed to fetch" (still rejects the request).
+                self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header(
                 "Access-Control-Allow-Headers",
                 "Content-Type, X-HXYRULE-Token",
@@ -2075,22 +2269,6 @@ def make_handler(helper: Helper):
                             "ordinals": mapping,
                             "rename": rename_result,
                         },
-                    )
-                    return
-                if path == "/ordinals/rename-files":
-                    raw_titles = body.get("titles") or {}
-                    titles_by_id = (
-                        {
-                            str(k): str(v)
-                            for k, v in raw_titles.items()
-                            if str(k).strip() and str(v).strip()
-                        }
-                        if isinstance(raw_titles, dict)
-                        else {}
-                    )
-                    self._json(
-                        200,
-                        helper.rename_media_to_ordinals(titles_by_id=titles_by_id),
                     )
                     return
                 if path == "/open":
@@ -2247,16 +2425,26 @@ def make_handler(helper: Helper):
                     helper.store.set_paused(False)
                     self._json(200, {"status": "ok", **helper.store.queue_snapshot()})
                     return
-                if path == "/downloads/skip":
-                    item_id = int(body.get("id") or 0)
-                    helper.store.update_queue_item(
-                        item_id,
-                        status="skipped",
-                        error=str(body.get("error") or "skipped"),
-                        finishedAt=utc_now(),
-                    )
-                    helper.store.set_paused(False)
-                    self._json(200, {"status": "ok", **helper.store.queue_snapshot()})
+                if path == "/downloads/queue/list":
+                    self._json(200, {"status": "ok", **helper.store.queue_list(body)})
+                    return
+                if path == "/downloads/queue/pause":
+                    ids = body.get("ids") if isinstance(body, dict) else None
+                    result = helper.store.queue_pause_live(ids)
+                    self._json(200, {"status": "ok", **result, **helper.store.queue_snapshot()})
+                    return
+                if path == "/downloads/queue/resume":
+                    ids = body.get("ids") if isinstance(body, dict) else None
+                    result = helper.store.queue_resume_paused(ids)
+                    self._json(200, {"status": "ok", **result, **helper.store.queue_snapshot()})
+                    return
+                if path == "/downloads/queue/remove":
+                    result = helper.store.queue_remove(int(body.get("id") or 0))
+                    self._json(200, {"status": "ok", **result, **helper.store.queue_snapshot()})
+                    return
+                if path == "/downloads/queue/reorder":
+                    result = helper.store.queue_reorder(body.get("ids") or [])
+                    self._json(200, {"status": "ok", **result, **helper.store.queue_snapshot()})
                     return
                 if path == "/downloads/cancel":
                     n = helper.store.cancel_remaining()
@@ -2266,10 +2454,6 @@ def make_handler(helper: Helper):
                     n = helper.store.clear_finished_queue()
                     self._json(200, {"status": "ok", "cleared": n, **helper.store.queue_snapshot()})
                     return
-                if path == "/downloads/purge":
-                    n = helper.store.purge_queue()
-                    self._json(200, {"status": "ok", "purged": n, **helper.store.queue_snapshot()})
-                    return
                 if path == "/downloads/suggest-filename":
                     name = helper.suggested_filename(
                         str(body.get("videoId") or ""),
@@ -2277,19 +2461,6 @@ def make_handler(helper: Helper):
                         str(body.get("ext") or ".mp4"),
                     )
                     self._json(200, {"status": "ok", "filename": name})
-                    return
-                if path == "/downloads/wait-stable":
-                    self._json(
-                        200,
-                        {
-                            "status": "ok",
-                            **helper.wait_stable_file(
-                                str(body.get("filename") or ""),
-                                expected_size=int(body.get("expectedSize") or 0),
-                                timeout=int(body.get("timeout") or 30),
-                            ),
-                        },
-                    )
                     return
                 if path == "/downloads/recover-partial":
                     self._json(200, helper.recover_partial_download(body))

@@ -15,7 +15,7 @@ Re-import `~/Library/Application Support/HXYRULE/extension-config.json`.
 
 - Mount `/Volumes/External/HXYRULE`.
 - System Settings → Privacy & Security → Files and Folders: allow Python access to Removable Volumes.
-- Filenames must start with video ID: `3105205__title.mp4`.
+- Filenames must include the video ID: preferred `{seq}——{title}——{videoId}.mp4`; legacy `{videoId}__title.mp4` still matches.
 
 ## Download fails
 

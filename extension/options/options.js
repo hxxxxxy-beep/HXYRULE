@@ -1,4 +1,4 @@
-import { getConfig, setConfig, helperFetch, helperHealthViaBackground } from '../lib/helper.js';
+import { getConfig, setConfig, helperViaBackground, helperHealthViaBackground } from '../lib/helper.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -72,14 +72,11 @@ $('save').addEventListener('click', async () => {
       localPreferPlayback: $('localPrefer').checked,
       showFullPath: $('showFullPath').checked,
     });
-    await helperFetch('/settings', {
-      method: 'POST',
-      body: {
-        player: $('player').value,
-        localPreferPlayback: $('localPrefer').checked,
-        showFullPath: $('showFullPath').checked,
-        videoDir: $('videoDir').value.trim(),
-      },
+    await helperViaBackground('HELPER_SETTINGS_SET', {
+      player: $('player').value,
+      localPreferPlayback: $('localPrefer').checked,
+      showFullPath: $('showFullPath').checked,
+      videoDir: $('videoDir').value.trim(),
     });
     status.className = 'status ok';
     status.textContent = 'Saved';
@@ -92,7 +89,9 @@ $('save').addEventListener('click', async () => {
 $('scan').addEventListener('click', async () => {
   const status = $('saveStatus');
   try {
-    const r = await helperFetch('/scan', { method: 'POST', body: {} });
+    // Must go through the service worker — options-page fetch to loopback often
+    // fails as opaque "Failed to fetch" (CORS / Private Network Access).
+    const r = await helperViaBackground('HELPER_SCAN');
     status.className = 'status ok';
     status.textContent = `Scan done: files ${r.fileCount}, matched ${r.matchedCount}`;
   } catch (err) {
@@ -104,7 +103,7 @@ $('scan').addEventListener('click', async () => {
 $('clearStale').addEventListener('click', async () => {
   const status = $('saveStatus');
   try {
-    const r = await helperFetch('/maintenance/clear-stale', { method: 'POST', body: {} });
+    const r = await helperViaBackground('HELPER_CLEAR_STALE');
     status.className = 'status ok';
     status.textContent = `Removed ${r.removed} stale index rows`;
   } catch (err) {
@@ -116,7 +115,7 @@ $('clearStale').addEventListener('click', async () => {
 $('openLogs').addEventListener('click', async () => {
   const status = $('healthStatus');
   try {
-    const r = await helperFetch('/maintenance/open-logs', { method: 'POST', body: {} });
+    const r = await helperViaBackground('HELPER_OPEN_LOGS');
     status.className = 'status ok';
     status.textContent = `Log: ${r.logPath}`;
   } catch (err) {

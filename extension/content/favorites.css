@@ -65,15 +65,16 @@ html.hxyrule-online-playing .js-close-popup {
 
 /*
  * Block the favorites grid while the popup is opening / open. Native Fancybox
- * does this with its overlay; we also install this shield immediately on click
- * so the empty gap before Fancybox mounts cannot select background videos.
+ * owns the visible dim; this shield is click-catch only (transparent) so the
+ * empty gap before Fancybox mounts cannot select background videos — and so
+ * closing the player cannot leave a gray flash over favorites during cleanup.
  * z-index stays below Fancybox (~8020) so the player and its backdrop still win.
  */
 .hxyrule-online-blocker {
   position: fixed !important;
   inset: 0 !important;
   z-index: 7000 !important;
-  background: rgba(0, 0, 0, 0.35) !important;
+  background: transparent !important;
   pointer-events: auto !important;
   cursor: default !important;
 }
@@ -354,8 +355,10 @@ body:has(.hxyrule-topstack) #list_videos_my_favourite_videos ~ .holder-bottom {
   top: 0 !important;
   bottom: auto !important;
   z-index: 2147482000 !important;
-  width: 100vw !important;
+  width: 100% !important;
+  max-width: 100vw !important;
   max-height: calc(100vh - 12px) !important;
+  /* Row overflow scrolls inside .hxyrule-pipeline (no topstack scrollbar). */
   overflow-x: hidden !important;
   overflow-y: auto !important;
   padding: calc(4px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
@@ -365,6 +368,14 @@ body:has(.hxyrule-topstack) #list_videos_my_favourite_videos ~ .holder-bottom {
   border-bottom: 1px solid #424c55 !important;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34) !important;
   box-sizing: border-box !important;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hxyrule-topstack::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 /* Reserve live toolbar height + 3px card gap so cards never sit under it. */
@@ -469,6 +480,8 @@ div.headline.hxyrule-hide-native-headline,
   margin-top: 0 !important;
   margin-bottom: 0 !important;
   flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .hxyrule-topstack--playlist > .hxyrule-playlist-page-title,
@@ -504,37 +517,64 @@ div.headline.hxyrule-hide-native-headline,
 .hxyrule-controls {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   justify-content: flex-start;
   gap: var(--hxyrule-row-gap, 4px);
   margin: 0;
   padding: 0;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   background: transparent;
   border: none;
   color: #8b9ba9;
 }
 
+/*
+ * Wide Match/View/Select (and Act) rows: scroll horizontally without a
+ * visible scrollbar. `safe center` keeps the row centered when it fits, but
+ * falls back to start when it overflows so Match's left border stays reachable
+ * (plain `center` clips the start and scrollLeft cannot reveal it).
+ */
 .hxyrule-pipeline {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: nowrap !important;
   align-items: center;
-  justify-content: center;
+  /* flex-start keeps Match reachable; safe center centers when the row fits. */
+  justify-content: flex-start;
+  justify-content: safe center;
   gap: 4px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
-  padding: 0;
+  /* End insets so scrolled-to edges still show step borders. */
+  padding: 0 8px;
+  box-sizing: border-box;
   overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-padding-inline: 8px;
+}
+
+.hxyrule-pipeline::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 /* Row 2: collection chip left · Sync · Queue · Index · Edit centered */
 .hxyrule-act-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
   align-items: center;
   justify-content: stretch;
   gap: 4px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .hxyrule-act-row > .hxyrule-favcount {
@@ -542,6 +582,7 @@ div.headline.hxyrule-hide-native-headline,
   justify-self: start;
   align-self: center;
   z-index: 2;
+  min-width: 0;
 }
 
 .hxyrule-act-row > .hxyrule-act-pipeline {
@@ -549,13 +590,15 @@ div.headline.hxyrule-hide-native-headline,
   justify-self: center;
   align-self: center;
   width: auto;
+  min-width: 0;
   max-width: 100%;
+  flex-wrap: nowrap !important;
 }
 
 .hxyrule-step {
   display: flex;
   flex-direction: row;
-  flex-wrap: nowrap;
+  flex-wrap: nowrap !important;
   align-items: stretch;
   /* Adjacent tiles (no sep): 2px. With sep: gap on both sides + 1px line. */
   gap: 2px;
@@ -571,6 +614,12 @@ div.headline.hxyrule-hide-native-headline,
   font-size: 12px;
   line-height: 18px;
   overflow: visible;
+}
+
+/* Row 1/2 steps must keep their content width so they stay on one toolbar row. */
+.hxyrule-controls .hxyrule-pipeline > .hxyrule-step,
+.hxyrule-act-pipeline > .hxyrule-step {
+  max-width: none;
 }
 
 .hxyrule-step-name {
@@ -902,6 +951,182 @@ div.headline.hxyrule-hide-native-headline,
 .item.thumb.hxyrule-filtered-out .hxyrule-pick:hover {
   background: #2c3b48;
   border-color: #3c464d;
+}
+
+/* Compact matches: hide the entire native grid; host sits in its place. */
+html.hxyrule-compact-active .hxyrule-native-thumbs-hidden,
+html.hxyrule-compact-active .hxyrule-compact-native-hidden {
+  display: none !important;
+}
+
+/* Native favorites/playlist pager stays in the toolbar but is inert in compact view. */
+html.hxyrule-compact-active .hxyrule-pagination-slot,
+html.hxyrule-compact-active #list_videos_my_favourite_videos_pagination,
+html.hxyrule-compact-active [id^="list_videos"][id$="_pagination"] {
+  opacity: 0.35;
+  pointer-events: none;
+  filter: grayscale(0.2);
+}
+
+html.hxyrule-compact-active .hxyrule-compact-thumbs,
+html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden,
+.hxyrule-compact-thumbs {
+  display: block !important;
+  visibility: visible !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  width: 100% !important;
+  clear: both !important;
+}
+
+.hxyrule-compact-thumbs::after {
+  content: '';
+  display: block;
+  clear: both;
+  height: 0;
+  visibility: hidden;
+}
+
+/* Full HXYRULE cards in compact host (thumb + pick rail), not bare images. */
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] {
+  position: relative;
+  visibility: visible !important;
+  box-sizing: border-box !important;
+  /* Visible so path / views / rating under the thumb are not clipped. */
+  overflow: visible !important;
+  max-width: 100%;
+  min-width: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+}
+
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th {
+  display: block;
+  position: relative;
+  overflow: hidden;
+  max-width: 100%;
+}
+
+/* In-card hover preview (site handlers do not bind to compact clones). */
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th video.hxyrule-compact-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 2;
+  pointer-events: none;
+  background: #000;
+}
+
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] .hxyrule-pick {
+  display: block !important;
+  visibility: visible !important;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  /* Keep path visible — title/info ellipsis themselves. */
+  overflow: visible;
+  height: auto !important;
+  max-height: none !important;
+  min-width: 0;
+}
+
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] .hxyrule-pick .thumb_title,
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] .hxyrule-pick .thumb_title.title {
+  display: block !important;
+  max-width: 100% !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  word-break: normal !important;
+}
+
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] .hxyrule-pick .thumb_info {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Compact matches: local path under the pick rail (same as Favorites). */
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] .hxyrule-status,
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] .hxyrule-path {
+  display: block !important;
+  visibility: visible !important;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Only the thumb image — never rating/views icons inside the pick rail. */
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th > img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+  max-width: 100%;
+}
+
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th .time {
+  display: block !important;
+  visibility: visible !important;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.item.thumb[data-hxyrule-compact='1'] img.hxyrule-compact-missing-thumb,
+.hxyrule-compact-thumbs .item.thumb img.hxyrule-compact-missing-thumb {
+  min-width: 0;
+  min-height: 120px;
+  width: 100%;
+  background: #2c3b48;
+  object-fit: cover;
+}
+
+/* Separate pager under the match grid — not the toolbar native pager. */
+.hxyrule-compact-pager {
+  clear: both;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 16px;
+  padding: 8px 10px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.hxyrule-compact-pager-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+}
+
+.hxyrule-compact-pager-gap {
+  color: #8b9ba9;
+  font-size: 12px;
+  padding: 0 2px;
+  user-select: none;
+}
+
+.hxyrule-compact-page-btn {
+  min-width: 2rem;
+}
+
+/* Highlight the current page numeral — not a filled background chip. */
+.hxyrule-compact-pager .hxyrule-compact-page-btn.is-current,
+.hxyrule-compact-pager .hxyrule-compact-page-btn.is-current:hover,
+.hxyrule-compact-pager .hxyrule-compact-page-btn.is-current:disabled {
+  background: #4d5b68;
+  color: #ffd28a;
+  font-weight: 800;
+  text-decoration: none;
+  pointer-events: none;
 }
 
 .hxyrule-playlist-list {
@@ -1346,9 +1571,11 @@ div.headline.hxyrule-hide-native-headline,
 
 .hxyrule-controls .hxyrule-btn-pair {
   display: inline-flex;
+  flex-wrap: nowrap !important;
   align-items: center;
   align-self: center;
   gap: 2px;
+  flex: 0 0 auto;
 }
 
 .hxyrule-controls .hxyrule-btn-pair [hidden] {
@@ -1627,6 +1854,223 @@ div.headline.hxyrule-hide-native-headline,
 
 .hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn:hover {
   background: #585e6a;
+}
+
+.hxyrule-tasks-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(80vh, 720px);
+  border: 1px solid #555861;
+  border-radius: 10px;
+  padding: 0;
+  background: #1e232b;
+  color: #e8edf3;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+}
+.hxyrule-tasks-dialog::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+.hxyrule-tasks-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(80vh, 720px);
+  box-sizing: border-box;
+  padding: 18px;
+}
+.hxyrule-tasks-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 240px;
+  max-height: min(52vh, 480px);
+  border: 1px solid #555861;
+  border-radius: 8px;
+  background: #242830;
+  overflow: hidden;
+}
+.hxyrule-tasks-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #555861;
+  background: #2c3b48;
+  font-size: 12px;
+}
+.hxyrule-tasks-pane-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.hxyrule-tasks-dialog .hxyrule-tasks-select-all {
+  appearance: none;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: #4d5b68;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  min-height: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hxyrule-tasks-dialog .hxyrule-tasks-select-all:hover {
+  background: #5f7080;
+}
+.hxyrule-tasks-dialog .hxyrule-tasks-select-all:disabled,
+.hxyrule-tasks-dialog .hxyrule-tasks-select-all:disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #4d5b68;
+  color: rgba(255, 255, 255, 0.75);
+}
+.hxyrule-tasks-count {
+  min-width: 1.6em;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #3a4a58;
+  color: #d7dde6;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.hxyrule-tasks-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.hxyrule-tasks-empty {
+  padding: 18px 10px;
+  color: #8b95a3;
+  text-align: center;
+  font-size: 12px;
+}
+.hxyrule-tasks-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  margin: 0 0 4px;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: grab;
+}
+.hxyrule-tasks-item:last-child { margin-bottom: 0; }
+.hxyrule-tasks-item.is-live { cursor: default; }
+.hxyrule-tasks-item.is-dragging { opacity: 0.4; }
+.hxyrule-tasks-item.is-drop-before::before,
+.hxyrule-tasks-item.is-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: #7eb7e6;
+  box-shadow: 0 0 0 1px rgb(126 183 230 / 35%);
+  pointer-events: none;
+  z-index: 2;
+}
+.hxyrule-tasks-item.is-drop-before::before { top: -3px; }
+.hxyrule-tasks-item.is-drop-after::after { bottom: -3px; }
+.hxyrule-tasks-item-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid #555861;
+  border-radius: 6px;
+  background: #2a313c;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.hxyrule-tasks-item-select:hover {
+  border-color: #6e7a88;
+  background: #303845;
+}
+.hxyrule-tasks-item.is-live .hxyrule-tasks-item-select { cursor: default; }
+.hxyrule-tasks-item-select.is-selected,
+.hxyrule-tasks-item.is-selected .hxyrule-tasks-item-select {
+  border-color: #8eb6d8;
+  background: #33485c;
+  box-shadow: inset 0 0 0 1px #8eb6d8;
+}
+.hxyrule-tasks-item:not([draggable="true"]) .hxyrule-tasks-item-select {
+  cursor: pointer;
+}
+.hxyrule-tasks-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #e8edf3;
+}
+.hxyrule-tasks-item-meta {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #9aa5b3;
+}
+.hxyrule-tasks-item-meta.is-live-status {
+  color: #7ec8ff;
+  font-weight: 600;
+}
+.hxyrule-tasks-item-meta.is-paused-status {
+  color: #e0b35a;
+  font-weight: 600;
+}
+.hxyrule-tasks-item-meta.is-failed-status {
+  color: #ffb4b8;
+  font-weight: 600;
+}
+.hxyrule-tasks-dialog .hxyrule-dialog-actions {
+  margin-top: 0;
+}
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn {
+  padding: 6px 12px;
+  border: 1px solid #6a6f79;
+  border-radius: 5px;
+  background: #4a4f59;
+  color: #f1f1f1;
+  height: auto;
+  min-height: 30px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn:hover {
+  background: #585e6a;
+}
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn:disabled,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn:disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #4a4f59;
+}
+
+@media (max-width: 560px) {
+  .hxyrule-tasks-dialog { width: min(100vw - 24px, 560px); }
 }
 
 /* Site uses .thumb{padding:0 10px 20px} for row gaps — override that, not just margin. */
@@ -1968,7 +2412,7 @@ div.headline.hxyrule-hide-native-headline,
   .hxyrule-filterbar,
   .hxyrule-controls .hxyrule-pipeline,
   .hxyrule-act-pipeline {
-    flex-wrap: nowrap;
+    flex-wrap: nowrap !important;
   }
   .hxyrule-btn {
     font-size: 13px;

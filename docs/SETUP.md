@@ -8,9 +8,9 @@ This document is enough to deploy without prior chat history. Read `README.md` f
 
 ## What this is
 
-- Chrome MV3 unpacked extension (`extension/`, version **0.1.59**)
+- Chrome MV3 unpacked extension (`extension/`, version **0.1.66**)
 - macOS LaunchAgent Helper (`mac-helper/`, `127.0.0.1:17934`)
-- Optional: `source-han-force/` (Source Han Serif on all pages; not required)
+- Optional: `source-han-force/` (Source Han Serif on all pages; not required — see its README)
 - Personal enhancer only — does **not** change Rule34Video servers
 - Cookies stay in Chrome; absolute paths never leave the machine
 - Do **not** modify any local `.ref-*`, `.tools/`, or `.ssh-deploy/` trees if present
@@ -21,9 +21,9 @@ This document is enough to deploy without prior chat history. Read `README.md` f
 |------|--------|
 | Video root | `/Volumes/External/HXYRULE` (must be mounted & writable) |
 | Helper | `com.hxyrule.mac-helper` on `127.0.0.1:17934` |
-| Player | `iina` |
+| Player | `iina` (install via `brew install --cask iina` if missing) |
 | Pairing file | `~/Library/Application Support/HXYRULE/extension-config.json` |
-| Outbound proxy (if needed) | `127.0.0.1:7897` |
+| GitHub / outbound proxy (if needed) | `http://127.0.0.1:7897` for git/`gh` only — never point Helper at it |
 
 Extension ID is assigned when you load the unpacked extension (example on one Mac: `eldakhcdkbkjifnpobghpjpidfpbngdb`). Always use the ID from `chrome://extensions` on **this** Mac.
 
@@ -56,7 +56,7 @@ chmod +x scripts/deploy-mac.sh mac-helper/install.sh mac-helper/uninstall.sh
 ./scripts/deploy-mac.sh --extension-id EXTENSION_ID
 ```
 
-Expect all unit tests OK (currently 36).
+Expect all unit tests OK (currently 39).
 
 5. Pair the extension:
    - Open the extension **Options** page

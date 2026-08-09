@@ -1,4 +1,4 @@
-import { getConfig, setConfig, helperFetch, helperHealth } from './lib/helper.js';
+import { getConfig, helperFetch, helperHealth } from './lib/helper.js';
 
 const DOWNLOAD_MIME_OK = true;
 /** Parallel Chrome downloads + Helper claims (was 1). */
@@ -10,8 +10,119 @@ const downloadWaiters = new Map();
 let cancelRequested = false;
 const activeChromeDownloadIds = new Set();
 const activeQueueItemIds = new Set();
+/** Items removed via Tasks — worker must not auto-retry or cancel-all on Chrome abort. */
+const removedQueueItemIds = new Set();
 /** Absolute partial paths currently held by Range recovery — orphan sweep must keep them. */
 const protectedPartialPaths = new Set();
+/** In-page Download/(a/b) session — lives in the SW so Tasks deletes survive pagination. */
+const DL_SESSION_KEY = 'hxyruleDownloadSession';
+let dlSession = { active: false, total: 0, baselineCompleted: 0 };
+let dlSessionLoad = null;
+
+async function loadDlSession() {
+  if (!dlSessionLoad) {
+    dlSessionLoad = (async () => {
+      try {
+        const stored = await chrome.storage.session.get(DL_SESSION_KEY);
+        const raw = stored?.[DL_SESSION_KEY];
+        if (raw && typeof raw === 'object') {
+          dlSession = {
+            active: !!raw.active,
+            total: Math.max(0, Number(raw.total) || 0),
+            baselineCompleted: Math.max(0, Number(raw.baselineCompleted) || 0),
+          };
+        }
+      } catch (_) {
+        /* session storage unavailable — memory only */
+      }
+      return dlSession;
+    })();
+  }
+  return dlSessionLoad;
+}
+
+async function saveDlSession() {
+  try {
+    await chrome.storage.session.set({ [DL_SESSION_KEY]: { ...dlSession } });
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function remainingQueueCount(status) {
+  const counts = status?.counts || {};
+  return (
+    Number(counts.pending || 0) +
+    Number(counts.waiting || 0) +
+    Number(counts.downloading || 0) +
+    Number(counts.paused || 0) +
+    Number(counts.failed || 0)
+  );
+}
+
+/** Attach Download button (a/b) — shrinks when Tasks cancels unfinished rows. */
+async function withDownloadProgress(status) {
+  await loadDlSession();
+  const active = Math.max(
+    0,
+    Number(status?.activeCount || 0) || remainingQueueCount(status),
+  );
+  const completed = Math.max(0, Number(status?.completed || 0));
+  const cancelled = Math.max(0, Number(status?.cancelled || 0));
+  let downloadProgress = 'idle';
+  let changed = false;
+
+  if (dlSession.active) {
+    const done = Math.max(0, completed - dlSession.baselineCompleted);
+    if (active > 0) {
+      const nextTotal = Math.max(done + active, 1);
+      if (nextTotal !== dlSession.total) {
+        dlSession.total = nextTotal;
+        changed = true;
+      }
+      downloadProgress = `${Math.min(done, dlSession.total)}/${dlSession.total}`;
+    } else {
+      dlSession = { active: false, total: 0, baselineCompleted: 0 };
+      changed = true;
+      downloadProgress = 'idle';
+    }
+  } else if (active > 0) {
+    // No session (SW restart / old tab): exclude cancelled rows from the fraction.
+    const totalRows = Math.max(0, Number(status?.total || 0));
+    const denom = Math.max(1, totalRows > 0 ? totalRows - cancelled : active + completed);
+    const done = Math.max(0, Math.min(completed, denom));
+    downloadProgress = `${done}/${denom}`;
+  }
+
+  if (changed) await saveDlSession();
+  return {
+    ...status,
+    downloadProgress,
+    downloadSession: { ...dlSession },
+  };
+}
+
+async function noteEnqueueSession(beforeStatus, added) {
+  await loadDlSession();
+  const n = Math.max(0, Number(added) || 0);
+  if (n <= 0) return;
+  if (dlSession.active) {
+    dlSession.total += n;
+  } else {
+    const remainingBefore = remainingQueueCount(beforeStatus);
+    dlSession = {
+      active: true,
+      total: remainingBefore + n,
+      baselineCompleted: Math.max(0, Number(beforeStatus?.completed || 0)),
+    };
+  }
+  await saveDlSession();
+}
+
+async function clearDlSession() {
+  dlSession = { active: false, total: 0, baselineCompleted: 0 };
+  await saveDlSession();
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
@@ -163,7 +274,8 @@ async function stopDownloads() {
   } catch (_) {
     /* ignore */
   }
-  return snap;
+  await clearDlSession();
+  return withDownloadProgress(snap);
 }
 
 function waitForDownload(id, timeoutMs = 6 * 60 * 60 * 1000) {
@@ -531,29 +643,8 @@ async function downloadOne(item) {
   });
   const filename = suggest.filename;
   const cfg = await getConfig();
-  // Save into configured root via absolute filename path unsupported by chrome.downloads
-  // on all platforms; use relative under user downloads then ask helper... 
-  // Better: set filename as basename and use downloads downloadPath via onDeterminingFilename
-  // Chrome cannot set arbitrary absolute paths without prompting. Use helper video dir
-  // by setting conflictAction and listening — actually MV3 can use filename relative to
-  // default Downloads folder only.
-  // Strategy: download to Downloads with our basename, then Helper moves? User root is
-  // /Volumes/External/HXYRULE. chrome.downloads cannot write there directly without
-  // asking user each time unless Download shelf path is set.
-  // Practical approach used by HXYLIVE: open URL in Chrome with save path configured
-  // to video dir. Here we set Chrome download filename to basename and instruct user
-  // to set Chrome download location OR we use the downloads API with filename and
-  // rely on chrome.downloads.search + moving via helper reading from Downloads.
-  //
-  // Better UX for personal tool: use chrome.downloads.download with `filename` as
-  // just basename, and in Helper register — but file lands in ~/Downloads.
-  // Then Helper can accept a move from Downloads if we pass the absolute path from
-  // chrome.downloads.search.
-  //
-  // We'll download, get final absolute path from chrome.downloads.search, verify it's
-  // a file, then ask Helper to import via a new endpoint that copies into root.
-  // Actually Helper.register_download expects file already in root.
-  // Add import-from-path that only accepts paths under Downloads or video root.
+  // chrome.downloads cannot write arbitrary absolute paths. Stage under
+  // ~/Downloads/HXYRULE/, then Helper imports into the realpath-locked video root.
 
   await helperFetch('/downloads/progress', {
     method: 'POST',
@@ -601,6 +692,13 @@ async function downloadOne(item) {
       );
     } catch (err) {
       err.chromeDownloadId = downloadId;
+      // Tasks remove (or Stop) aborted this Chrome download — do not Range-recover.
+      if (cancelRequested || removedQueueItemIds.has(Number(item.id))) {
+        const cancelled = new Error('cancelled');
+        cancelled.cancelled = true;
+        cancelled.chromeDownloadId = downloadId;
+        throw cancelled;
+      }
       // Keep this queue item/video lock occupied while Helper tries the partial.
       // A fresh Chrome retry is scheduled only after this recovery returns false.
       if (!cancelRequested && isTransientDownloadError(err)) {
@@ -727,7 +825,10 @@ function startQueueJob(item, work) {
       // control reaches here, so remove this interrupted DownloadItem's file
       // (and Helper exact/video-id partials) before scheduling a fresh attempt.
       await cleanupFailedDownloadArtifacts(item, err);
-      if (cancelRequested || err.cancelled || /cancelled/i.test(String(err.message || ''))) {
+      if (removedQueueItemIds.has(itemId)) {
+        removedQueueItemIds.delete(itemId);
+        // Tasks already marked this row cancelled; do not wipe the rest of the queue.
+      } else if (cancelRequested || err.cancelled || /cancelled/i.test(String(err.message || ''))) {
         try {
           await helperFetch('/downloads/cancel', { method: 'POST', body: {} });
         } catch (_) {
@@ -1482,6 +1583,7 @@ function pageOpenNativePopup(href, videoId) {
   const $ = window.jQuery || window.$;
   const id = String(videoId || '');
   const wantHref = String(href || '');
+  const popupFallback = id ? `https://rule34video.com/popup-video/${id}/?popup_id=1` : '';
   const opts = {
     topRatio: 0,
     openEffect: 'none',
@@ -1493,28 +1595,48 @@ function pageOpenNativePopup(href, videoId) {
     nextEffect: 'none',
     nextSpeed: 0,
   };
-  const items = Array.from(document.querySelectorAll('.item.thumb'));
-  const item = items.find((el) => {
-    if (id && (el.classList.contains(`video_${id}`) || el.querySelector(`[href*="/video/${id}/"]`))) {
-      return true;
-    }
-    const a = el.querySelector('a.th.js-open-popup, a.th');
-    if (!a) return false;
-    const h = a.getAttribute('href') || '';
-    return (
-      (wantHref && (h === wantHref || a.href === wantHref)) ||
-      (id && (h.includes(`/video/${id}/`) || a.href.includes(`/video/${id}/`)))
-    );
-  });
+  // Prefer compact-match cards: native favorites stay in DOM (hidden) and would
+  // otherwise win querySelectorAll / stale fancybox data-href from sample clones.
+  const compactHost = document.querySelector('.hxyrule-compact-thumbs');
+  const roots = compactHost ? [compactHost, document] : [document];
+  let item = null;
+  for (const root of roots) {
+    const items = Array.from(root.querySelectorAll('.item.thumb'));
+    item =
+      items.find((el) => {
+        if (
+          id &&
+          (el.classList.contains(`video_${id}`) || el.querySelector(`[href*="/video/${id}/"]`))
+        ) {
+          return true;
+        }
+        const a = el.querySelector('a.th.js-open-popup, a.th');
+        if (!a) return false;
+        const h = a.getAttribute('href') || '';
+        return (
+          (wantHref && (h === wantHref || a.href === wantHref)) ||
+          (id && (h.includes(`/video/${id}/`) || a.href.includes(`/video/${id}/`)))
+        );
+      }) || null;
+    if (item) break;
+  }
 
   const clickEl =
     item?.querySelector('a.js-click[data-fancybox="ajax"], [data-fancybox="ajax"]') || null;
   const openEl = item?.querySelector('a.th.js-open-popup, a.th') || null;
   const pageHref = openEl?.getAttribute('href') || wantHref || '';
-  const ajaxHref =
-    clickEl?.getAttribute('data-href') ||
-    clickEl?.getAttribute('href') ||
-    (id ? `https://rule34video.com/popup-video/${id}/?popup_id=1` : '');
+  let ajaxHref =
+    clickEl?.getAttribute('data-href') || clickEl?.getAttribute('href') || '';
+  // Compact sample clones often keep the donor card's popup URL — ignore mismatch.
+  if (
+    id &&
+    ajaxHref &&
+    !ajaxHref.includes(`/popup-video/${id}/`) &&
+    !ajaxHref.includes(`/video/${id}/`)
+  ) {
+    ajaxHref = '';
+  }
+  if (!ajaxHref) ajaxHref = popupFallback;
 
   if (pageHref) {
     try {
@@ -1551,8 +1673,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
       case 'GET_CONFIG':
         return await getConfig();
-      case 'SET_CONFIG':
-        return await setConfig(message.partial || {});
       case 'PAGE_REBIND_POPUPS': {
         const tabId = sender.tab?.id;
         if (!tabId) return { ok: false, reason: 'no tab' };
@@ -1598,8 +1718,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'HELPER_HEALTH':
         return await helperHealth();
-      case 'HELPER_SCAN':
-        return await helperFetch('/scan', { method: 'POST', body: {} });
+      case 'HELPER_SCAN': {
+        const result = await helperFetch('/scan', { method: 'POST', body: {} });
+        // Drop absolutePath before extension messaging — same info is in
+        // displayPath/relativePath and keeps the ~N×path payload smaller.
+        const matches = result && result.matches;
+        if (matches && typeof matches === 'object') {
+          for (const row of Object.values(matches)) {
+            if (row && typeof row === 'object' && 'absolutePath' in row) {
+              delete row.absolutePath;
+            }
+          }
+        }
+        return result;
+      }
+      case 'HELPER_SETTINGS_SET':
+        return await helperFetch('/settings', {
+          method: 'POST',
+          body: {
+            player: message.player,
+            localPreferPlayback: message.localPreferPlayback,
+            showFullPath: message.showFullPath,
+            videoDir: message.videoDir,
+          },
+        });
+      case 'HELPER_CLEAR_STALE':
+        return await helperFetch('/maintenance/clear-stale', { method: 'POST', body: {} });
+      case 'HELPER_OPEN_LOGS':
+        return await helperFetch('/maintenance/open-logs', { method: 'POST', body: {} });
       case 'HELPER_LOOKUP':
         return await helperFetch('/lookup', {
           method: 'POST',
@@ -1620,20 +1766,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           method: 'POST',
           body: { seq: message.seq },
         });
-      case 'HELPER_ORDINALS_REBUILD':
-        return await helperFetch('/ordinals/rebuild', {
-          method: 'POST',
-          body: {
-            videoIds: message.videoIds || [],
-            titles: message.titles || {},
-            renameFiles: message.renameFiles !== false,
-          },
-        });
-      case 'HELPER_ORDINALS_RENAME_FILES':
-        return await helperFetch('/ordinals/rename-files', {
-          method: 'POST',
-          body: {},
-        });
       case 'HELPER_OPEN':
         return await helperFetch('/open', {
           method: 'POST',
@@ -1649,11 +1781,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           method: 'POST',
           body: { relativePath: message.relativePath || '' },
         });
-      case 'HELPER_DELETE_MEDIA':
-        return await helperFetch('/media/delete', {
-          method: 'POST',
-          body: { videoIds: message.videoIds || [] },
-        });
       case 'HELPER_LIST_ORPHANS':
         return await helperFetch('/media/list-orphans', {
           method: 'POST',
@@ -1667,7 +1794,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'QUEUE_STATUS': {
         const status = await helperFetch('/downloads/status');
         if (Number(status.activeCount || 0) > 0) runQueueWorker();
-        return status;
+        return withDownloadProgress(status);
       }
       case 'QUEUE_RECOVER_FAILED': {
         cancelRequested = false;
@@ -1689,47 +1816,96 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'QUEUE_ENQUEUE': {
         cancelRequested = false;
+        const before = await helperFetch('/downloads/status');
         const result = await helperFetch('/downloads/enqueue', {
           method: 'POST',
           body: { items: message.items || [] },
         });
+        await noteEnqueueSession(before, result?.added);
         runQueueWorker();
-        return result;
+        const status = await withDownloadProgress(await helperFetch('/downloads/status'));
+        return { ...result, ...status };
       }
-      case 'QUEUE_PAUSE':
-        return await helperFetch('/downloads/pause', { method: 'POST', body: {} });
+      case 'QUEUE_PAUSE': {
+        // Tasks: pause selected (or all) in-flight downloads; next pending rows claim freed slots.
+        const ids = Array.isArray(message.ids)
+          ? message.ids.map((x) => Number(x)).filter((id) => id > 0)
+          : null;
+        const r = await helperFetch('/downloads/queue/pause', {
+          method: 'POST',
+          body: ids ? { ids } : {},
+        });
+        const pausedItems = Array.isArray(r?.pausedItems) ? r.pausedItems : [];
+        for (const item of pausedItems) {
+          const itemId = Number(item?.id || 0);
+          if (itemId > 0) removedQueueItemIds.add(itemId);
+        }
+        const chromeIds = [
+          ...(Array.isArray(r?.chromeDownloadIds) ? r.chromeDownloadIds : []),
+          ...pausedItems.map((item) => Number(item?.chromeDownloadId || 0)),
+        ].filter((id) => id > 0);
+        for (const downloadId of new Set(chromeIds)) {
+          try {
+            await chrome.downloads.cancel(downloadId);
+          } catch (_) {
+            /* ignore */
+          }
+          activeChromeDownloadIds.delete(downloadId);
+        }
+        runQueueWorker();
+        return r;
+      }
       case 'QUEUE_RESUME': {
         cancelRequested = false;
-        const r = await helperFetch('/downloads/resume', { method: 'POST', body: {} });
-        runQueueWorker();
-        return r;
-      }
-      case 'QUEUE_RETRY': {
-        cancelRequested = false;
-        const r = await helperFetch('/downloads/retry', {
+        // Tasks: return selected (or all) paused rows to pending (not queue-wide pause meta).
+        const ids = Array.isArray(message.ids)
+          ? message.ids.map((x) => Number(x)).filter((id) => id > 0)
+          : null;
+        const r = await helperFetch('/downloads/queue/resume', {
           method: 'POST',
-          body: { id: message.id },
+          body: ids ? { ids } : {},
         });
         runQueueWorker();
         return r;
       }
-      case 'QUEUE_SKIP': {
-        cancelRequested = false;
-        const r = await helperFetch('/downloads/skip', {
+      case 'QUEUE_LIST':
+        return await helperFetch('/downloads/queue/list', { method: 'POST', body: {} });
+      case 'QUEUE_REMOVE': {
+        const itemId = Number(message.id || 0);
+        if (itemId > 0) removedQueueItemIds.add(itemId);
+        let chromeDownloadId = Number(message.chromeDownloadId || 0);
+        let r;
+        try {
+          r = await helperFetch('/downloads/queue/remove', {
+            method: 'POST',
+            body: { id: itemId },
+          });
+          chromeDownloadId = Number(r?.chromeDownloadId || chromeDownloadId || 0);
+        } catch (err) {
+          removedQueueItemIds.delete(itemId);
+          throw err;
+        }
+        if (chromeDownloadId > 0) {
+          try {
+            await chrome.downloads.cancel(chromeDownloadId);
+          } catch (_) {
+            /* ignore */
+          }
+          activeChromeDownloadIds.delete(chromeDownloadId);
+        }
+        runQueueWorker();
+        return withDownloadProgress(r);
+      }
+      case 'QUEUE_REORDER': {
+        const r = await helperFetch('/downloads/queue/reorder', {
           method: 'POST',
-          body: { id: message.id },
+          body: { ids: message.ids || [] },
         });
         runQueueWorker();
         return r;
       }
-      case 'QUEUE_CANCEL':
-        return await stopDownloads();
       case 'QUEUE_STOP':
         return await stopDownloads();
-      case 'QUEUE_CLEAR_FINISHED':
-        return await helperFetch('/downloads/clear-finished', { method: 'POST', body: {} });
-      case 'QUEUE_PURGE':
-        return await helperFetch('/downloads/purge', { method: 'POST', body: {} });
       case 'SELECTION_GET':
         return await getSelection();
       case 'SELECTION_SET':
@@ -1740,6 +1916,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return await getFavIndex(message.scope || 'favorites');
       case 'FAV_INDEX_SET':
         return await setFavIndex(message.index || {}, message.scope || message.index?.scope || 'favorites');
+      case 'INDEX_JOB_STATUS':
+        return await getIndexJobStatus();
+      case 'INDEX_JOB_START':
+        return await startIndexJob(message || {});
+      case 'INDEX_JOB_STOP':
+        return await stopIndexJob();
+      case 'RENUMBER_JOB_STATUS':
+        return await getRenumberJobStatus();
+      case 'RENUMBER_JOB_START':
+        return await startRenumberJob(message || {});
+      case 'RENUMBER_JOB_STOP':
+        return await stopRenumberJob();
       case 'PLAYLIST_MEMBERSHIP_GET':
         return await getPlaylistMembership();
       case 'SITE_PLAYLIST_LIST':
@@ -1993,6 +2181,108 @@ function parseDeleteValue(block) {
   return null;
 }
 
+/** Absolute preview URL from card HTML; skip lazy placeholders. */
+function normalizeThumbUrl(raw) {
+  let u = String(raw || '').trim();
+  if (!u) return '';
+  if (/^(?:data:|about:blank)/i.test(u)) return '';
+  if (/(?:grey|gray|spacer|blank|lazy)\.(?:gif|png|jpg|svg)|\/empty\./i.test(u)) return '';
+  if (u.startsWith('//')) u = `https:${u}`;
+  else if (u.startsWith('/')) u = `https://rule34video.com${u}`;
+  else if (!/^https?:\/\//i.test(u)) return '';
+  return u;
+}
+
+function extractThumbUrlFromChunk(chunk) {
+  if (!chunk) return '';
+  const attrs = ['data-original', 'data-src', 'data-lazy-src', 'data-thumb', 'src'];
+  for (const attr of attrs) {
+    const re = new RegExp(`${attr}=["']([^"']+)["']`, 'i');
+    const m = chunk.match(re);
+    const u = normalizeThumbUrl(m?.[1]);
+    if (u) return u;
+  }
+  return '';
+}
+
+/** Hover-preview mp4/webm URL from a favorites card HTML chunk. */
+function extractPreviewUrlFromChunk(chunk) {
+  if (!chunk) return '';
+  const attrs = [
+    'data-preview',
+    'data-trailer',
+    'data-video',
+    'data-mp4',
+    'data-webm',
+    'data-mid',
+  ];
+  for (const attr of attrs) {
+    const re = new RegExp(`${attr}=["']([^"']+)["']`, 'i');
+    const m = chunk.match(re);
+    const raw = String(m?.[1] || '').trim();
+    if (!raw || /grey\.gif|spacer|blank|lazy|placeholder/i.test(raw)) continue;
+    if (/\.(?:mp4|webm)(?:$|\?)/i.test(raw) || /preview|trailer/i.test(raw)) {
+      return normalizeThumbUrl(raw) || (raw.startsWith('//') ? `https:${raw}` : raw);
+    }
+  }
+  return '';
+}
+
+function stripHtmlText(raw) {
+  return String(raw || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Views / like-rate / added time from a favorites card HTML chunk. */
+function extractCardMetaFromChunk(chunk) {
+  if (!chunk) return { viewsText: '', ratingText: '', addedText: '' };
+  const pick = (cls) => {
+    const re = new RegExp(
+      `class=["'][^"']*\\b${cls}\\b[^"']*["'][^>]*>([\\s\\S]*?)</(?:div|span|a|li|p)`,
+      'i',
+    );
+    const m = chunk.match(re);
+    return stripHtmlText(m?.[1]);
+  };
+  return {
+    viewsText: pick('views'),
+    ratingText: pick('rating'),
+    addedText: pick('added'),
+  };
+}
+
+/**
+ * Full `.item.thumb` block for a video. Meta (views/rating/added) sits ~2KB after
+ * the /video/{id}/ href — a short window around the URL misses it.
+ */
+function findThumbBlockForVideo(html, videoId) {
+  const id = String(videoId || '').trim();
+  if (!html || !id) return '';
+  const openRe = /<div\b[^>]*class=["'][^"']*\bitem\b[^"']*\bthumb\b[^"']*["'][^>]*>/gi;
+  const opens = [...html.matchAll(openRe)];
+  for (let i = 0; i < opens.length; i += 1) {
+    const start = opens[i].index;
+    const end =
+      i + 1 < opens.length ? opens[i + 1].index : Math.min(html.length, start + 10000);
+    const block = html.slice(start, end);
+    if (
+      block.includes(`/video/${id}/`) ||
+      block.includes(`value="${id}"`) ||
+      block.includes(`value='${id}'`) ||
+      block.includes(`video_${id}`)
+    ) {
+      return block;
+    }
+  }
+  const around = html.match(
+    new RegExp(`[\\s\\S]{0,800}/video/${id}/[\\s\\S]{0,4000}`, 'i'),
+  );
+  return around ? around[0] : '';
+}
+
 function parseFavoriteCards(html, pageNum) {
   const items = [];
   const seen = new Set();
@@ -2014,33 +2304,40 @@ function parseFavoriteCards(html, pageNum) {
       favoritePage: pageNum,
       cardIndex: index,
       durationSec: durationById[String(id)] ?? null,
+      thumbUrl: '',
+      previewUrl: '',
+      viewsText: '',
+      ratingText: '',
+      addedText: '',
     });
     index += 1;
   }
   if (items.length) {
-    // Enrich titles/hrefs from nearby markup when possible.
+    // Enrich titles/hrefs/meta from the full card block (not a short URL window).
     items.forEach((it) => {
-      const around = html.match(
-        new RegExp(
-          `[\\s\\S]{0,800}/video/${it.videoId}/[\\s\\S]{0,800}`,
-          'i',
-        ),
-      );
-      if (!around) return;
-      const chunk = around[0];
+      const chunk = findThumbBlockForVideo(html, it.videoId);
+      if (!chunk) return;
       const href = chunk.match(/href=["'](https?:\/\/rule34video\.com\/video\/\d+\/[^"']+)["']/i)
         || chunk.match(/href=["'](\/video\/\d+\/[^"']+)["']/i);
-      const title = chunk.match(/title=["']([^"']+)["']/i);
+      const title =
+        chunk.match(/class=["'][^"']*\bthumb_title\b[^"']*["'][^>]*>([\s\S]*?)<\//i) ||
+        chunk.match(/title=["']([^"']+)["']/i);
       if (href) {
         it.detailUrl = href[1].startsWith('http')
           ? href[1]
           : `https://rule34video.com${href[1]}`;
       }
-      if (title) it.title = title[1];
+      if (title) it.title = stripHtmlText(title[1]) || it.title;
       if (it.durationSec == null) {
         const dur = extractDurationFromChunk(chunk);
         if (dur != null) it.durationSec = dur;
       }
+      if (!it.thumbUrl) it.thumbUrl = extractThumbUrlFromChunk(chunk);
+      if (!it.previewUrl) it.previewUrl = extractPreviewUrlFromChunk(chunk);
+      const meta = extractCardMetaFromChunk(chunk);
+      it.viewsText = meta.viewsText;
+      it.ratingText = meta.ratingText;
+      it.addedText = meta.addedText;
     });
     return items;
   }
@@ -2066,6 +2363,7 @@ function parseFavoriteCards(html, pageNum) {
         ? hrefMatch[1]
         : `https://rule34video.com${hrefMatch[1]}`;
     }
+    const meta = extractCardMetaFromChunk(block);
     items.push({
       videoId,
       detailUrl,
@@ -2073,6 +2371,11 @@ function parseFavoriteCards(html, pageNum) {
       favoritePage: pageNum,
       cardIndex: items.length,
       durationSec: durationById[String(videoId)] ?? extractDurationFromChunk(block),
+      thumbUrl: extractThumbUrlFromChunk(block),
+      previewUrl: extractPreviewUrlFromChunk(block),
+      viewsText: meta.viewsText,
+      ratingText: meta.ratingText,
+      addedText: meta.addedText,
     });
   }
   return items;
@@ -2097,9 +2400,582 @@ function parseMaxPage(html) {
   return max || null;
 }
 
+const INDEX_JOB_KEY = 'hxyruleIndexJob';
+let indexJobRunning = false;
+
+function idleIndexJob() {
+  return {
+    status: 'idle',
+    scope: '',
+    playlistId: '',
+    blockId: '',
+    fromKey: '',
+    page: 0,
+    maxPage: 0,
+    videos: [],
+    error: '',
+    startedAt: 0,
+    updatedAt: 0,
+    cancelRequested: false,
+  };
+}
+
+function publicIndexJobStatus(job) {
+  const j = job || idleIndexJob();
+  return {
+    status: j.status || 'idle',
+    scope: j.scope || '',
+    playlistId: j.playlistId || '',
+    page: Number(j.page) || 0,
+    maxPage: Number(j.maxPage) || 0,
+    videoCount: Array.isArray(j.videos) ? j.videos.length : 0,
+    error: j.error || '',
+    startedAt: Number(j.startedAt) || 0,
+    updatedAt: Number(j.updatedAt) || 0,
+    cancelRequested: !!j.cancelRequested,
+  };
+}
+
+async function readIndexJob() {
+  const data = await chrome.storage.local.get([INDEX_JOB_KEY]);
+  return { ...idleIndexJob(), ...(data[INDEX_JOB_KEY] || {}) };
+}
+
+async function writeIndexJob(job) {
+  const next = { ...idleIndexJob(), ...job, updatedAt: Date.now() };
+  await chrome.storage.local.set({ [INDEX_JOB_KEY]: next });
+  return next;
+}
+
+async function getIndexJobStatus() {
+  const job = await readIndexJob();
+  if ((job.status === 'running' || job.status === 'stopping') && !indexJobRunning) {
+    runIndexJob();
+  }
+  return publicIndexJobStatus(job);
+}
+
+async function stopIndexJob() {
+  const job = await readIndexJob();
+  if (job.status !== 'running' && job.status !== 'stopping') {
+    return publicIndexJobStatus(job);
+  }
+  const next = await writeIndexJob({
+    ...job,
+    status: 'stopping',
+    cancelRequested: true,
+  });
+  runIndexJob();
+  return publicIndexJobStatus(next);
+}
+
+function jobIsActive(job) {
+  const status = job?.status || '';
+  return status === 'running' || status === 'stopping';
+}
+
+async function startIndexJob({
+  scope = 'favorites',
+  maxPage = 0,
+  playlistId = '',
+  blockId = '',
+  fromKey = '',
+} = {}) {
+  const scopeKey = String(scope || 'favorites').trim() || 'favorites';
+  const current = await readIndexJob();
+  if (jobIsActive(current)) {
+    if (current.scope === scopeKey) {
+      runIndexJob();
+      return publicIndexJobStatus(current);
+    }
+    throw new Error(
+      `Index already running for ${current.scope} (${current.page}/${current.maxPage}). Stop it first.`,
+    );
+  }
+  // Soft mutex: index and renumber both crawl site lists; renumber also renames files.
+  const renumber = await readRenumberJob();
+  if (jobIsActive(renumber)) {
+    throw new Error(
+      'Build/Refresh index cannot run while Renumber is active — finish or Stop Renumber first (shared Favorites crawl; Renumber also renames library files)',
+    );
+  }
+  let pid = String(playlistId || '').trim();
+  if (scopeKey.startsWith('playlist:')) {
+    pid = pid || scopeKey.slice('playlist:'.length);
+    if (!/^[1-9]\d*$/.test(pid)) throw new Error('invalid playlist id');
+  } else if (scopeKey !== 'favorites') {
+    throw new Error('unsupported index scope');
+  }
+  const hintMax = Math.max(1, Number(maxPage) || 1);
+  const job = await writeIndexJob({
+    status: 'running',
+    scope: scopeKey,
+    playlistId: scopeKey === 'favorites' ? '' : pid,
+    blockId: String(blockId || '').trim(),
+    fromKey: String(fromKey || '').trim(),
+    page: 0,
+    maxPage: hintMax,
+    videos: [],
+    error: '',
+    startedAt: Date.now(),
+    cancelRequested: false,
+  });
+  try {
+    await chrome.alarms?.create?.('hxyrule-index', { periodInMinutes: 1 });
+  } catch (_) {
+    /* optional */
+  }
+  runIndexJob();
+  return publicIndexJobStatus(job);
+}
+
+function coerceIndexDurationSec(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+async function fetchIndexPage(job, page) {
+  if (job.scope === 'favorites') {
+    return await fetchFavoritesPage(page);
+  }
+  return await fetchPlaylistPage(job.playlistId, page, {
+    blockId: job.blockId,
+    fromKey: job.fromKey,
+  });
+}
+
+function runIndexJob() {
+  if (indexJobRunning) return;
+  indexJobRunning = true;
+  (async () => {
+    try {
+      while (true) {
+        let job = await readIndexJob();
+        if (job.status !== 'running' && job.status !== 'stopping') break;
+        if (job.cancelRequested || job.status === 'stopping') {
+          await writeIndexJob({
+            ...job,
+            status: 'stopped',
+            cancelRequested: false,
+            // Drop partial crawl; keep previous FAV_INDEX_* untouched.
+            videos: [],
+            error: '',
+          });
+          break;
+        }
+        const nextPage = (Number(job.page) || 0) + 1;
+        let maxPage = Math.max(1, Number(job.maxPage) || 1);
+        if (nextPage > maxPage) {
+          // Finished.
+        } else {
+          const data = await fetchIndexPage(job, nextPage);
+          const batch = Array.isArray(data?.items) ? data.items : [];
+          if (data?.maxPage && Number(data.maxPage) > maxPage) {
+            maxPage = Number(data.maxPage);
+          }
+          const videos = Array.isArray(job.videos) ? job.videos.slice() : [];
+          const seen = new Set(videos.map((v) => String(v.videoId || '')));
+          batch.forEach((it, idx) => {
+            const id = String(it.videoId || '');
+            if (!id || seen.has(id)) return;
+            seen.add(id);
+            videos.push({
+              videoId: id,
+              title: it.title || id,
+              detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/`,
+              favoritePage: Number(it.favoritePage) || nextPage,
+              cardIndex: Number.isInteger(it.cardIndex) ? it.cardIndex : idx,
+              durationSec: coerceIndexDurationSec(it.durationSec),
+              thumbUrl: normalizeThumbUrl(it.thumbUrl),
+              previewUrl: normalizeThumbUrl(it.previewUrl),
+              viewsText: String(it.viewsText || '').replace(/\s+/g, ' ').trim(),
+              ratingText: String(it.ratingText || '').replace(/\s+/g, ' ').trim(),
+              addedText: String(it.addedText || '').replace(/\s+/g, ' ').trim(),
+            });
+          });
+          job = await writeIndexJob({
+            ...job,
+            status: 'running',
+            page: nextPage,
+            maxPage,
+            videos,
+            error: '',
+          });
+          if (nextPage < maxPage) {
+            await new Promise((r) => setTimeout(r, 800));
+            continue;
+          }
+        }
+        // Persist final index.
+        job = await readIndexJob();
+        if (job.cancelRequested || job.status === 'stopping') {
+          await writeIndexJob({
+            ...job,
+            status: 'stopped',
+            cancelRequested: false,
+            videos: [],
+            error: '',
+          });
+          break;
+        }
+        const videos = Array.isArray(job.videos) ? job.videos : [];
+        if (!videos.length) {
+          await writeIndexJob({
+            ...job,
+            status: 'error',
+            cancelRequested: false,
+            videos: [],
+            error: 'indexed 0 videos — check login / page parse',
+          });
+          break;
+        }
+        await setFavIndex(
+          {
+            builtAt: Date.now(),
+            favTotal: videos.length,
+            videos,
+            scope: job.scope,
+          },
+          job.scope,
+        );
+        await writeIndexJob({
+          ...job,
+          status: 'done',
+          cancelRequested: false,
+          videos: [],
+          error: '',
+          page: Number(job.maxPage) || job.page,
+        });
+        break;
+      }
+    } catch (err) {
+      const job = await readIndexJob();
+      await writeIndexJob({
+        ...job,
+        status: 'error',
+        cancelRequested: false,
+        videos: [],
+        error: String(err?.message || err),
+      });
+    } finally {
+      indexJobRunning = false;
+      const job = await readIndexJob();
+      if (job.status === 'running' || job.status === 'stopping') {
+        // SW may have been interrupted mid-page; resume.
+        runIndexJob();
+      } else {
+        try {
+          await chrome.alarms?.clear?.('hxyrule-index');
+        } catch (_) {
+          /* optional */
+        }
+      }
+    }
+  })();
+}
+
+const RENUMBER_JOB_KEY = 'hxyruleRenumberJob';
+let renumberJobRunning = false;
+const ORDINAL_PREFIX_RE = /^(\d+)\s*——\s*/;
+
+function bareTitleForRenumber(title) {
+  return String(title || '').replace(ORDINAL_PREFIX_RE, '').trim();
+}
+
+function idleRenumberJob() {
+  return {
+    status: 'idle',
+    phase: '', // crawl | renaming
+    page: 0,
+    maxPage: 0,
+    videoIds: [],
+    titles: {},
+    result: null,
+    error: '',
+    startedAt: 0,
+    updatedAt: 0,
+    cancelRequested: false,
+  };
+}
+
+function publicRenumberJobStatus(job) {
+  const j = job || idleRenumberJob();
+  return {
+    status: j.status || 'idle',
+    phase: j.phase || '',
+    page: Number(j.page) || 0,
+    maxPage: Number(j.maxPage) || 0,
+    videoCount: Array.isArray(j.videoIds) ? j.videoIds.length : 0,
+    result: j.result || null,
+    error: j.error || '',
+    startedAt: Number(j.startedAt) || 0,
+    updatedAt: Number(j.updatedAt) || 0,
+    cancelRequested: !!j.cancelRequested,
+  };
+}
+
+async function readRenumberJob() {
+  const data = await chrome.storage.local.get([RENUMBER_JOB_KEY]);
+  return { ...idleRenumberJob(), ...(data[RENUMBER_JOB_KEY] || {}) };
+}
+
+async function writeRenumberJob(job) {
+  const next = { ...idleRenumberJob(), ...job, updatedAt: Date.now() };
+  await chrome.storage.local.set({ [RENUMBER_JOB_KEY]: next });
+  return next;
+}
+
+async function getRenumberJobStatus() {
+  const job = await readRenumberJob();
+  if ((job.status === 'running' || job.status === 'stopping') && !renumberJobRunning) {
+    runRenumberJob();
+  }
+  return publicRenumberJobStatus(job);
+}
+
+async function stopRenumberJob() {
+  const job = await readRenumberJob();
+  if (job.status !== 'running' && job.status !== 'stopping') {
+    return publicRenumberJobStatus(job);
+  }
+  const next = await writeRenumberJob({
+    ...job,
+    status: 'stopping',
+    cancelRequested: true,
+  });
+  runRenumberJob();
+  return publicRenumberJobStatus(next);
+}
+
+async function startRenumberJob({ maxPage = 1 } = {}) {
+  const current = await readRenumberJob();
+  if (jobIsActive(current)) {
+    runRenumberJob();
+    return publicRenumberJobStatus(current);
+  }
+  // Soft mutex: renumber and index both crawl; do not stack Favorites crawls / rename.
+  const index = await readIndexJob();
+  if (jobIsActive(index)) {
+    throw new Error(
+      'Renumber cannot run while Build/Refresh index is active — finish or Stop index first (shared Favorites crawl; Renumber also renames library files)',
+    );
+  }
+  const job = await writeRenumberJob({
+    status: 'running',
+    phase: 'crawl',
+    page: 0,
+    maxPage: Math.max(1, Number(maxPage) || 1),
+    videoIds: [],
+    titles: {},
+    result: null,
+    error: '',
+    startedAt: Date.now(),
+    cancelRequested: false,
+  });
+  try {
+    await chrome.alarms?.create?.('hxyrule-renumber', { periodInMinutes: 1 });
+  } catch (_) {
+    /* optional */
+  }
+  runRenumberJob();
+  return publicRenumberJobStatus(job);
+}
+
+function runRenumberJob() {
+  if (renumberJobRunning) return;
+  renumberJobRunning = true;
+  (async () => {
+    try {
+      while (true) {
+        let job = await readRenumberJob();
+        if (job.status !== 'running' && job.status !== 'stopping') break;
+        if (job.cancelRequested || job.status === 'stopping') {
+          await writeRenumberJob({
+            ...job,
+            status: 'stopped',
+            phase: '',
+            cancelRequested: false,
+            videoIds: [],
+            titles: {},
+            result: null,
+            error: '',
+          });
+          break;
+        }
+
+        const phase = job.phase || 'crawl';
+        if (phase === 'crawl') {
+          const nextPage = (Number(job.page) || 0) + 1;
+          let maxPage = Math.max(1, Number(job.maxPage) || 1);
+          if (nextPage <= maxPage) {
+            const data = await fetchFavoritesPage(nextPage);
+            const batch = Array.isArray(data?.items) ? data.items : [];
+            if (data?.maxPage && Number(data.maxPage) > maxPage) {
+              maxPage = Number(data.maxPage);
+            }
+            const videoIds = Array.isArray(job.videoIds) ? job.videoIds.slice() : [];
+            const titles = { ...(job.titles || {}) };
+            const seen = new Set(videoIds.map(String));
+            batch.forEach((it) => {
+              const id = String(it.videoId || '');
+              if (!id || seen.has(id)) return;
+              seen.add(id);
+              videoIds.push(id);
+              const bare = bareTitleForRenumber(it.title || '');
+              if (bare && bare !== id) titles[id] = bare;
+            });
+            job = await writeRenumberJob({
+              ...job,
+              status: 'running',
+              phase: 'crawl',
+              page: nextPage,
+              maxPage,
+              videoIds,
+              titles,
+              error: '',
+            });
+            if (nextPage < maxPage) {
+              await new Promise((r) => setTimeout(r, 700));
+              continue;
+            }
+          }
+
+          job = await readRenumberJob();
+          if (job.cancelRequested || job.status === 'stopping') {
+            await writeRenumberJob({
+              ...job,
+              status: 'stopped',
+              phase: '',
+              cancelRequested: false,
+              videoIds: [],
+              titles: {},
+              result: null,
+              error: '',
+            });
+            break;
+          }
+          const videoIds = Array.isArray(job.videoIds) ? job.videoIds : [];
+          if (!videoIds.length) {
+            await writeRenumberJob({
+              ...job,
+              status: 'error',
+              phase: '',
+              cancelRequested: false,
+              videoIds: [],
+              titles: {},
+              error: 'crawled 0 videos — check login / page parse',
+            });
+            break;
+          }
+          await writeRenumberJob({
+            ...job,
+            status: 'running',
+            phase: 'renaming',
+            page: Number(job.maxPage) || job.page,
+            error: '',
+          });
+          continue;
+        }
+
+        if (phase === 'renaming') {
+          const videoIds = Array.isArray(job.videoIds) ? job.videoIds : [];
+          const titles = job.titles || {};
+          const result = await helperFetch('/ordinals/rebuild', {
+            method: 'POST',
+            body: {
+              videoIds,
+              titles,
+              renameFiles: true,
+            },
+          });
+          job = await readRenumberJob();
+          if (job.cancelRequested || job.status === 'stopping') {
+            // Rebuild already applied; still mark stopped so UI does not claim success toast path.
+            await writeRenumberJob({
+              ...job,
+              status: 'stopped',
+              phase: '',
+              cancelRequested: false,
+              videoIds: [],
+              titles: {},
+              result: null,
+              error: '',
+            });
+            break;
+          }
+          try {
+            await helperFetch('/scan', { method: 'POST', body: {} });
+          } catch (_) {
+            /* rename already applied; scan optional */
+          }
+          await writeRenumberJob({
+            ...job,
+            status: 'done',
+            phase: '',
+            cancelRequested: false,
+            videoIds: [],
+            titles: {},
+            result: {
+              count: Number(result?.count) || videoIds.length,
+              renamed: Number(result?.rename?.renamed) || 0,
+              errorCount: Number(result?.rename?.errorCount) || 0,
+            },
+            error: '',
+            page: Number(job.maxPage) || job.page,
+          });
+          break;
+        }
+
+        await writeRenumberJob({
+          ...job,
+          status: 'error',
+          phase: '',
+          cancelRequested: false,
+          videoIds: [],
+          titles: {},
+          error: `unknown renumber phase: ${phase}`,
+        });
+        break;
+      }
+    } catch (err) {
+      const job = await readRenumberJob();
+      await writeRenumberJob({
+        ...job,
+        status: 'error',
+        phase: '',
+        cancelRequested: false,
+        videoIds: [],
+        titles: {},
+        error: String(err?.message || err),
+      });
+    } finally {
+      renumberJobRunning = false;
+      const job = await readRenumberJob();
+      if (job.status === 'running' || job.status === 'stopping') {
+        runRenumberJob();
+      } else {
+        try {
+          await chrome.alarms?.clear?.('hxyrule-renumber');
+        } catch (_) {
+          /* optional */
+        }
+      }
+    }
+  })();
+}
+
 // Resume queue after SW wake
 chrome.alarms?.create?.('hxyrule-queue', { periodInMinutes: 1 });
 chrome.alarms?.onAlarm?.addListener((alarm) => {
   if (alarm.name === 'hxyrule-queue') runQueueWorker();
+  if (alarm.name === 'hxyrule-index') runIndexJob();
+  if (alarm.name === 'hxyrule-renumber') runRenumberJob();
 });
 runQueueWorker();
+readIndexJob().then((job) => {
+  if (job.status === 'running' || job.status === 'stopping') runIndexJob();
+}).catch(() => {});
+readRenumberJob().then((job) => {
+  if (job.status === 'running' || job.status === 'stopping') runRenumberJob();
+}).catch(() => {});

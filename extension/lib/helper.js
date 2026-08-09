@@ -37,11 +37,23 @@ export async function helperFetch(path, { method = 'GET', body } = {}) {
   if (hasBody) {
     headers['Content-Type'] = 'application/json';
   }
-  const res = await fetch(`${cfg.helperBase}${path}`, {
-    method,
-    headers,
-    body: hasBody ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${cfg.helperBase}${path}`, {
+      method,
+      headers,
+      body: hasBody ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    const detail = String(err && err.message ? err.message : err);
+    if (/failed to fetch|networkerror|load failed/i.test(detail)) {
+      throw new Error(
+        `Cannot reach Helper at ${cfg.helperBase} (${detail}). ` +
+          'Check Helper is running, then Reload the extension and re-import pairing if needed.',
+      );
+    }
+    throw err;
+  }
   let data = null;
   try {
     data = await res.json();
@@ -62,19 +74,23 @@ export async function helperHealth() {
   return helperFetch('/health');
 }
 
-/** Prefer Service Worker bridge — more reliable Origin handling than options page fetch. */
-export function helperHealthViaBackground() {
+/** Prefer Service Worker bridge — more reliable Origin/PNA than options-page fetch. */
+export function helperViaBackground(type, payload = {}) {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'HELPER_HEALTH' }, (resp) => {
+    chrome.runtime.sendMessage({ type, ...payload }, (resp) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
       }
       if (!resp || !resp.ok) {
-        reject(new Error((resp && resp.error) || 'health check failed'));
+        reject(new Error((resp && resp.error) || `${type} failed`));
         return;
       }
       resolve(resp.result);
     });
   });
+}
+
+export function helperHealthViaBackground() {
+  return helperViaBackground('HELPER_HEALTH');
 }

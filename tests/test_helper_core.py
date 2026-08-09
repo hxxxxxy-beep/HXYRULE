@@ -828,6 +828,154 @@ class HelperCoreTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
 
+    def test_downloads_queue_list_remove_reorder(self):
+        status, payload = self._req(
+            "POST",
+            "/downloads/enqueue",
+            body={
+                "items": [
+                    {"videoId": "1001", "title": "a", "sortKey": 1},
+                    {"videoId": "1002", "title": "b", "sortKey": 2},
+                    {"videoId": "1003", "title": "c", "sortKey": 3},
+                ]
+            },
+        )
+        self.assertEqual(status, 200, payload)
+
+        status, listed = self._req("POST", "/downloads/queue/list", body={})
+        self.assertEqual(status, 200, listed)
+        self.assertEqual(
+            [i["videoId"] for i in listed["items"]], ["1001", "1002", "1003"]
+        )
+        self.assertFalse(listed.get("paused"))
+
+        status, claim = self._req("POST", "/downloads/claim", body={})
+        self.assertEqual(status, 200, claim)
+        self.assertEqual(claim["item"]["videoId"], "1001")
+        live_id = int(claim["item"]["id"])
+
+        status, listed = self._req("POST", "/downloads/queue/list", body={})
+        ids = [int(i["id"]) for i in listed["items"]]
+        self.assertEqual(ids[0], live_id)
+        # Swap the two pending rows; live download must stay first.
+        status, reordered = self._req(
+            "POST",
+            "/downloads/queue/reorder",
+            body={"ids": [ids[0], ids[2], ids[1]]},
+        )
+        self.assertEqual(status, 200, reordered)
+        self.assertEqual(
+            [i["videoId"] for i in reordered["items"]], ["1001", "1003", "1002"]
+        )
+
+        pending_id = int(reordered["items"][2]["id"])
+        status, removed = self._req(
+            "POST", "/downloads/queue/remove", body={"id": pending_id}
+        )
+        self.assertEqual(status, 200, removed)
+        self.assertEqual(removed["item"]["videoId"], "1002")
+        self.assertEqual(removed["item"]["status"], "cancelled")
+        self.assertEqual(removed["remaining"], 2)
+
+        status, left = self._req("POST", "/downloads/queue/list", body={})
+        self.assertEqual([i["videoId"] for i in left["items"]], ["1001", "1003"])
+
+        status, removed_live = self._req(
+            "POST", "/downloads/queue/remove", body={"id": live_id}
+        )
+        self.assertEqual(status, 200, removed_live)
+        self.assertEqual(removed_live["item"]["status"], "cancelled")
+        status, empty = self._req("POST", "/downloads/queue/list", body={})
+        self.assertEqual([i["videoId"] for i in empty["items"]], ["1003"])
+
+    def test_downloads_queue_pause_live_lets_next_claim(self):
+        status, payload = self._req(
+            "POST",
+            "/downloads/enqueue",
+            body={
+                "items": [
+                    {"videoId": "2001", "title": "live", "sortKey": 1},
+                    {"videoId": "2002", "title": "next", "sortKey": 2},
+                ]
+            },
+        )
+        self.assertEqual(status, 200, payload)
+        status, claim = self._req("POST", "/downloads/claim", body={})
+        self.assertEqual(claim["item"]["videoId"], "2001")
+        live_id = int(claim["item"]["id"])
+
+        status, paused = self._req("POST", "/downloads/queue/pause", body={})
+        self.assertEqual(status, 200, paused)
+        self.assertTrue(paused.get("hasPausedItems"))
+        self.assertFalse(paused.get("hasDownloading"))
+        self.assertEqual(paused["pausedItems"][0]["id"], live_id)
+        self.assertEqual(paused["pausedItems"][0]["status"], "paused")
+
+        # Pausing must not freeze the queue — the next pending item takes the slot.
+        status, next_claim = self._req("POST", "/downloads/claim", body={})
+        self.assertEqual(status, 200, next_claim)
+        self.assertEqual(next_claim["item"]["videoId"], "2002")
+
+        status, listed = self._req("POST", "/downloads/queue/list", body={})
+        self.assertEqual(listed["items"][0]["videoId"], "2002")
+        self.assertEqual(listed["items"][0]["status"], "downloading")
+        self.assertEqual(listed["items"][1]["videoId"], "2001")
+        self.assertEqual(listed["items"][1]["status"], "paused")
+
+        status, resumed = self._req("POST", "/downloads/queue/resume", body={})
+        self.assertEqual(status, 200, resumed)
+        self.assertEqual(resumed.get("resumed"), 1)
+        status, listed = self._req("POST", "/downloads/queue/list", body={})
+        by_id = {int(i["id"]): i for i in listed["items"]}
+        self.assertEqual(by_id[live_id]["status"], "pending")
+        self.assertFalse(listed.get("hasPausedItems"))
+
+    def test_downloads_queue_pause_resume_selected_ids_only(self):
+        status, payload = self._req(
+            "POST",
+            "/downloads/enqueue",
+            body={
+                "items": [
+                    {"videoId": "2101", "title": "live-a", "sortKey": 1},
+                    {"videoId": "2102", "title": "live-b", "sortKey": 2},
+                    {"videoId": "2103", "title": "queued", "sortKey": 3},
+                ]
+            },
+        )
+        self.assertEqual(status, 200, payload)
+        status, claim_a = self._req("POST", "/downloads/claim", body={})
+        self.assertEqual(status, 200, claim_a)
+        status, claim_b = self._req("POST", "/downloads/claim", body={})
+        self.assertEqual(status, 200, claim_b)
+        id_a = int(claim_a["item"]["id"])
+        id_b = int(claim_b["item"]["id"])
+
+        status, paused = self._req(
+            "POST", "/downloads/queue/pause", body={"ids": [id_a]}
+        )
+        self.assertEqual(status, 200, paused)
+        self.assertEqual([int(i["id"]) for i in paused["pausedItems"]], [id_a])
+        self.assertTrue(paused.get("hasDownloading"))
+        self.assertTrue(paused.get("hasPausedItems"))
+
+        status, listed = self._req("POST", "/downloads/queue/list", body={})
+        by_id = {int(i["id"]): i for i in listed["items"]}
+        self.assertEqual(by_id[id_a]["status"], "paused")
+        self.assertEqual(by_id[id_b]["status"], "downloading")
+        queued = next(i for i in listed["items"] if i["videoId"] == "2103")
+        self.assertEqual(queued["status"], "pending")
+
+        status, resumed = self._req(
+            "POST", "/downloads/queue/resume", body={"ids": [id_a]}
+        )
+        self.assertEqual(status, 200, resumed)
+        self.assertEqual(resumed.get("resumed"), 1)
+        status, listed = self._req("POST", "/downloads/queue/list", body={})
+        by_id = {int(i["id"]): i for i in listed["items"]}
+        self.assertEqual(by_id[id_a]["status"], "pending")
+        self.assertEqual(by_id[id_b]["status"], "downloading")
+        self.assertFalse(listed.get("hasPausedItems"))
+
 
 if __name__ == "__main__":
     unittest.main()

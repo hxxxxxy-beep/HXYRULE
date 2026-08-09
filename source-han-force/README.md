@@ -1,6 +1,6 @@
 # HXY Source Han Serif Force
 
-Standalone Chrome MV3 extension that forces the locally installed **Source Han Serif** (思源宋体) on all `http` / `https` / `file` pages.
+Standalone Chrome MV3 extension that forces the locally installed **Source Han Serif** on all `http` / `https` / `file` pages.
 
 Optional companion to HXYRULE. Not required for downloads, scan, or Helper pairing.
 

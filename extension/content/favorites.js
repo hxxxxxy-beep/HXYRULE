@@ -78,16 +78,34 @@
     }
   }
 
+  /**
+   * Online play pushStates to /video/{id}/. Keep Favorites/playlist scope so
+   * pageWatch does not treat that as a library switch (which reset Compact).
+   */
+  let lastListPathname =
+    FAV_PATH_RE.test(location.pathname) || PLAYLIST_PATH_RE.test(location.pathname)
+      ? location.pathname
+      : '';
+
+  function activeLibraryPathname() {
+    const p = String(location.pathname || '');
+    if (FAV_PATH_RE.test(p) || PLAYLIST_PATH_RE.test(p)) {
+      lastListPathname = p;
+      return p;
+    }
+    return lastListPathname || p;
+  }
+
   function isFavoritesPage() {
-    return FAV_PATH_RE.test(location.pathname);
+    return FAV_PATH_RE.test(activeLibraryPathname());
   }
 
   function isPlaylistDetailPage() {
-    return PLAYLIST_PATH_RE.test(location.pathname);
+    return PLAYLIST_PATH_RE.test(activeLibraryPathname());
   }
 
   function currentPlaylistIdFromPath() {
-    const m = String(location.pathname || '').match(PLAYLIST_PATH_RE);
+    const m = String(activeLibraryPathname() || '').match(PLAYLIST_PATH_RE);
     return m && /^[1-9]\d*$/.test(m[1]) ? m[1] : null;
   }
 
@@ -574,16 +592,107 @@
     return parseDurationSec(timeEl.textContent);
   }
 
+  /** Absolute preview URL; skip lazy placeholders. */
+  function normalizeThumbUrl(raw) {
+    let u = String(raw || '').trim();
+    if (!u) return '';
+    if (/^(?:data:|about:blank)/i.test(u)) return '';
+    if (/(?:grey|gray|spacer|blank|lazy)\.(?:gif|png|jpg|svg)|\/empty\./i.test(u)) return '';
+    if (u.startsWith('//')) u = `https:${u}`;
+    else if (u.startsWith('/')) u = `https://rule34video.com${u}`;
+    else if (!/^https?:\/\//i.test(u)) return '';
+    return u;
+  }
+
+  function cardThumbUrl(el) {
+    const img = qs(el, 'img');
+    if (!img) return '';
+    const attrs = ['data-original', 'data-src', 'data-lazy-src', 'data-thumb', 'src'];
+    for (const attr of attrs) {
+      const u = normalizeThumbUrl(img.getAttribute(attr));
+      if (u) return u;
+    }
+    return '';
+  }
+
+  /** Hover-preview media URL from a native (or compact) card. */
+  function cardPreviewUrl(el) {
+    if (!el) return '';
+    const nodes = [el, ...qsa(el, 'a.th, a, img, video, source')];
+    const attrs = [
+      'data-preview',
+      'data-trailer',
+      'data-video',
+      'data-mp4',
+      'data-webm',
+      'data-mid',
+      'data-src',
+    ];
+    for (const node of nodes) {
+      if (!node?.getAttribute) continue;
+      for (const attr of attrs) {
+        const raw = String(node.getAttribute(attr) || '').trim();
+        if (!raw || /grey\.gif|spacer|blank|lazy|placeholder/i.test(raw)) continue;
+        if (/\.(?:mp4|webm)(?:$|\?)/i.test(raw) || /preview|trailer/i.test(raw)) {
+          return normalizeThumbUrl(raw) || (raw.startsWith('//') ? `https:${raw}` : raw);
+        }
+      }
+    }
+    return '';
+  }
+
+  /** Views / like-rate / added time from a native favorites card. */
+  function cardMetaFromEl(el) {
+    const info = el ? qs(el, '.thumb_info') : null;
+    const textOf = (sel) =>
+      String(info ? qs(info, sel)?.textContent || '' : '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return {
+      viewsText: textOf('.views'),
+      ratingText: textOf('.rating'),
+      addedText: textOf('.added'),
+    };
+  }
+
+  function normalizeMetaText(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function formatClockDuration(sec) {
+    const n = coerceDurationSec(sec);
+    if (n == null) return '';
+    const h = Math.floor(n / 3600);
+    const m = Math.floor((n % 3600) / 60);
+    const s = Math.floor(n % 60);
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
   function parseCards() {
     const page = currentPageNumber();
-    const cards = qsa(document, '.item.thumb');
+    const compactRoot = qs(document, `.${NS}-compact-thumbs`);
+    const cards = compactViewActive
+      ? qsa(compactRoot || document, `.item.thumb[data-hxyrule-compact="1"]`)
+      : qsa(document, '.item.thumb').filter(
+          (el) =>
+            el.dataset?.hxyruleCompact !== '1' &&
+            !el.closest(`.${NS}-compact-thumbs`),
+        );
     return cards.map((el, index) => {
       const checkbox =
         qs(el, 'input.checkbox[name="delete[]"]') ||
         qs(el, 'input[name="delete[]"]') ||
         qs(el, 'input[type="checkbox"]');
-      const link = qs(el, 'a.th.js-open-popup, a.th');
-      const videoId = checkbox?.value || (link?.href.match(/\/video\/(\d+)\//) || [])[1];
+      const link =
+        qs(el, 'a.th.js-open-popup, a.th') || qs(el, 'a[href*="/video/"]');
+      const videoId =
+        checkbox?.value ||
+        (link?.href.match(/\/video\/(\d+)\//) ||
+          (link?.getAttribute('href') || '').match(/\/video\/(\d+)\//) ||
+          [])[1];
       if (!videoId) return null;
       const titleEl = qs(el, '.thumb_title') || (link && qs(link, '.thumb_title'));
       // Prefer live textContent / link title (may include "N——" ordinal). Do NOT
@@ -596,13 +705,15 @@
         link?.dataset?.hxyruleOrigTitle ||
         link?.textContent?.trim() ||
         videoId;
+      const favPage = Number(el.dataset?.hxyruleFavoritePage);
+      const cardIdx = Number(el.dataset?.hxyruleCardIndex);
       return {
         el,
         videoId: String(videoId),
         detailUrl: link?.href || `https://rule34video.com/video/${videoId}/`,
         title: String(rawTitle).trim(),
-        favoritePage: page,
-        cardIndex: index,
+        favoritePage: Number.isInteger(favPage) && favPage > 0 ? favPage : page,
+        cardIndex: Number.isInteger(cardIdx) && cardIdx >= 0 ? cardIdx : index,
         durationSec: cardDurationSec(el),
         checkbox,
         link,
@@ -623,7 +734,12 @@
   function cardsPerPageEstimate() {
     const maxP = maxPageNumber();
     const total = scanFavTotal || detectFavoritesTotal() || 0;
-    const cur = qsa(document, '.item.thumb').length;
+    const cur = qsa(document, '.item.thumb').filter(
+      (el) =>
+        el.dataset?.hxyruleCompact !== '1' &&
+        !el.closest(`.${NS}-compact-thumbs`) &&
+        !el.classList.contains(`${NS}-compact-native-hidden`),
+    ).length;
     const curPage = currentPageNumber();
     // A non-last page is always full — lock that as the page size.
     if (Number.isInteger(curPage) && maxP > 1 && curPage < maxP && cur > 0) {
@@ -874,8 +990,20 @@
   }
 
   function favoritesListEl() {
-    const box = listBoxEl();
-    return qs(box || document, '[id$="_items"], #list_videos_my_favourite_videos_items, .thumbs');
+    const box = listBoxEl() || document;
+    // Never return the compact host — it also has class "thumbs" and sits
+    // before the native list, which broke findNativeCardEl / stack anchoring.
+    const byId =
+      qs(box, '#list_videos_my_favourite_videos_items') ||
+      qs(box, '[id$="_items"]');
+    if (byId && !byId.classList.contains(`${NS}-compact-thumbs`)) return byId;
+    return (
+      qsa(box, '.thumbs').find(
+        (el) =>
+          !el.classList.contains(`${NS}-compact-thumbs`) &&
+          el.dataset?.hxyruleCompactHost !== '1',
+      ) || null
+    );
   }
 
   function formatFavCount(n) {
@@ -1012,6 +1140,8 @@
 
   async function resetSelectionForLibraryEntry() {
     selectionLibraryKey = indexScopeKey();
+    selCollectCancel = true;
+    selProgress = null;
     try {
       await send('SELECTION_CLEAR');
     } catch (_) {
@@ -1028,6 +1158,8 @@
     const key = indexScopeKey();
     if (selectionLibraryKey != null && selectionLibraryKey !== key) {
       selectionLibraryKey = key;
+      selCollectCancel = true;
+      selProgress = null;
       try {
         await send('SELECTION_CLEAR');
       } catch (_) {
@@ -1110,9 +1242,13 @@
 
   let statusFlash = '';
   let statusFlashIsError = false;
+  let statusFlashTimer = null;
   let statusLive = 'Ready';
   const STATUS_LOG_LIMIT = 200;
   const statusLog = [];
+  let taskQueueState = { items: [], paused: false };
+  let taskQueuePollTimer = null;
+  let taskQueueDrag = null;
 
   function formatStatusTime(date = new Date()) {
     return date.toLocaleTimeString('en-GB', {
@@ -1283,6 +1419,488 @@
     });
   }
 
+  function taskQueueItemFullTitle(item) {
+    const title = String(item?.title || item?.videoId || 'Untitled').trim() || 'Untitled';
+    return title;
+  }
+
+  function taskQueueItemLabel(item) {
+    return [...taskQueueItemFullTitle(item)].slice(0, 15).join('');
+  }
+
+  function taskQueueStatusLabel(item) {
+    const st = String(item?.status || '');
+    if (st === 'downloading') return 'Downloading';
+    if (st === 'paused') return 'Paused';
+    if (st === 'waiting') {
+      const n = Number(item?.retryCount || 0);
+      return n > 0 ? `Retry ${n}` : 'Waiting';
+    }
+    if (st === 'failed') return 'Failed';
+    if (st === 'pending') return 'Queued';
+    return st || 'Queued';
+  }
+
+  function selectedTaskQueueIds(dialog) {
+    const ids = new Set();
+    dialog?.querySelectorAll?.(`.${NS}-tasks-item-select.is-selected`).forEach((el) => {
+      const id = el.dataset.id || '';
+      if (id) ids.add(id);
+    });
+    return ids;
+  }
+
+  function setTaskQueueItemsSelected(dialog, on) {
+    if (!dialog) return;
+    dialog.querySelectorAll(`.${NS}-tasks-item-select`).forEach((select) => {
+      select.classList.toggle('is-selected', on);
+      select.setAttribute('aria-pressed', on ? 'true' : 'false');
+      select.closest(`.${NS}-tasks-item`)?.classList.toggle('is-selected', on);
+    });
+    updateTaskQueueActionButtons(dialog);
+  }
+
+  function updateTaskQueueActionButtons(dialog = qs(document, `.${NS}-tasks-dialog`)) {
+    if (!dialog) return;
+    const selectedIds = selectedTaskQueueIds(dialog);
+    const selectedCount = selectedIds.size;
+    const deleteBtn = qs(dialog, '[data-act="tasks-delete"]');
+    if (deleteBtn) deleteBtn.disabled = selectedCount === 0;
+    const selectAllBtn = qs(dialog, '[data-act="tasks-select-all"]');
+    if (selectAllBtn) selectAllBtn.disabled = !(taskQueueState.items?.length);
+    const clearBtn = qs(dialog, '[data-act="tasks-clear-selection"]');
+    if (clearBtn) clearBtn.disabled = selectedCount === 0;
+    const byId = new Map((taskQueueState.items || []).map((item) => [String(item.id), item]));
+    let selectedDownloading = 0;
+    let selectedPaused = 0;
+    selectedIds.forEach((id) => {
+      const st = String(byId.get(id)?.status || '');
+      if (st === 'downloading') selectedDownloading += 1;
+      if (st === 'paused') selectedPaused += 1;
+    });
+    const pauseBtn = qs(dialog, '[data-act="tasks-pause"]');
+    const resumeBtn = qs(dialog, '[data-act="tasks-resume"]');
+    // Pause/Resume only apply to the selection; queued rows keep Pause disabled.
+    if (pauseBtn) pauseBtn.disabled = selectedDownloading === 0;
+    if (resumeBtn) resumeBtn.disabled = selectedPaused === 0;
+  }
+
+  function renderTaskQueueList(selectedIds = null) {
+    const dialog = qs(document, `.${NS}-tasks-dialog`);
+    if (!dialog) return;
+    const list = qs(dialog, '[data-role="download-queue-list"]');
+    const countEl = qs(dialog, '[data-role="download-queue-count"]');
+    if (!list) return;
+    const keep = selectedIds || selectedTaskQueueIds(dialog);
+    const items = taskQueueState.items || [];
+    if (countEl) countEl.textContent = String(items.length);
+    list.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('li');
+      empty.className = `${NS}-tasks-empty`;
+      empty.textContent = 'Queue empty';
+      list.appendChild(empty);
+      return;
+    }
+    const liveCount = items.filter((item) => {
+      const st = String(item.status || '');
+      return st === 'downloading' || st === 'paused';
+    }).length;
+    items.forEach((item) => {
+      const li = document.createElement('li');
+      const st = String(item.status || '');
+      const isLive = st === 'downloading' || st === 'paused';
+      const id = String(item.id);
+      const fullTitle = taskQueueItemFullTitle(item);
+      const selected = keep.has(id);
+      li.className = `${NS}-tasks-item${isLive ? ' is-live' : ''}${selected ? ' is-selected' : ''}`;
+      li.dataset.id = id;
+      // Pending/waiting/failed reorder; downloading + paused stay pinned at the top.
+      li.draggable = !isLive && items.length > 1 && items.length > liveCount;
+      const select = document.createElement('div');
+      select.className = `${NS}-tasks-item-select${selected ? ' is-selected' : ''}`;
+      select.dataset.id = id;
+      select.setAttribute('role', 'button');
+      select.tabIndex = 0;
+      select.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      select.setAttribute('aria-label', `Select ${fullTitle}`);
+      const meta = document.createElement('span');
+      meta.className = `${NS}-tasks-item-meta`;
+      if (st === 'downloading') meta.classList.add('is-live-status');
+      if (st === 'paused') meta.classList.add('is-paused-status');
+      if (st === 'failed') meta.classList.add('is-failed-status');
+      meta.textContent = taskQueueStatusLabel(item);
+      const title = document.createElement('span');
+      title.className = `${NS}-tasks-item-title`;
+      title.textContent = taskQueueItemLabel(item);
+      title.title = fullTitle;
+      select.append(meta, title);
+      li.append(select);
+      list.appendChild(li);
+    });
+  }
+
+  function renderTaskQueues() {
+    const dialog = qs(document, `.${NS}-tasks-dialog`);
+    const keep = selectedTaskQueueIds(dialog);
+    renderTaskQueueList(keep);
+    updateTaskQueueActionButtons(dialog);
+  }
+
+  async function refreshTaskQueues() {
+    const dialog = qs(document, `.${NS}-tasks-dialog`);
+    if (!dialog?.open) return;
+    // Replacing the list mid-drag aborts HTML5 DnD.
+    if (taskQueueDrag) return;
+    try {
+      const listed = await send('QUEUE_LIST');
+      if (taskQueueDrag || !dialog.open) return;
+      taskQueueState = {
+        items: Array.isArray(listed?.items) ? listed.items : [],
+        paused: !!listed?.paused,
+        hasPausedItems: !!listed?.hasPausedItems,
+        hasDownloading: !!listed?.hasDownloading,
+      };
+      renderTaskQueues();
+    } catch (error) {
+      setError(error?.message || String(error));
+    }
+  }
+
+  function setTaskQueuePolling(on) {
+    if (taskQueuePollTimer) {
+      clearInterval(taskQueuePollTimer);
+      taskQueuePollTimer = null;
+    }
+    if (!on) return;
+    taskQueuePollTimer = setInterval(() => {
+      refreshTaskQueues().catch(() => {});
+    }, 1200);
+  }
+
+  async function removeSelectedTaskQueueItems() {
+    const dialog = qs(document, `.${NS}-tasks-dialog`);
+    const selected = [...(dialog?.querySelectorAll?.(`.${NS}-tasks-item-select.is-selected`) || [])]
+      .map((el) => el.dataset.id)
+      .filter(Boolean);
+    if (!selected.length) return;
+    const byId = new Map((taskQueueState.items || []).map((i) => [String(i.id), i]));
+    let lastStatus = null;
+    try {
+      for (const id of selected) {
+        const snap = byId.get(String(id));
+        lastStatus = await send('QUEUE_REMOVE', {
+          id: Number(id),
+          chromeDownloadId: Number(snap?.chromeDownloadId || 0),
+        });
+        const title = snap ? taskQueueItemFullTitle(snap) : id;
+        // Log cancel, then immediately show shrunk Download (a/b) on chip + button.
+        setFlash(`Cancelled · ${title}`);
+        if (statusFlashTimer) {
+          clearTimeout(statusFlashTimer);
+          statusFlashTimer = null;
+        }
+        statusFlash = '';
+        applyDownloadProgress(lastStatus);
+      }
+    } finally {
+      await refreshTaskQueues().catch(() => {});
+      await refreshQueue().catch(() => {});
+    }
+  }
+
+  async function pauseTaskQueue() {
+    const dialog = qs(document, `.${NS}-tasks-dialog`);
+    const byId = new Map((taskQueueState.items || []).map((item) => [String(item.id), item]));
+    const ids = [...selectedTaskQueueIds(dialog)]
+      .filter((id) => String(byId.get(id)?.status || '') === 'downloading')
+      .map((id) => Number(id))
+      .filter((id) => id > 0);
+    if (!ids.length) return;
+    await send('QUEUE_PAUSE', { ids });
+    if (ids.length === 1) {
+      const snap = byId.get(String(ids[0]));
+      setFlash(snap ? `Paused · ${taskQueueItemFullTitle(snap)}` : 'Download paused');
+    } else {
+      setFlash(`Paused ${ids.length} downloads`);
+    }
+    await refreshTaskQueues();
+    await refreshQueue();
+  }
+
+  async function resumeTaskQueue() {
+    const dialog = qs(document, `.${NS}-tasks-dialog`);
+    const byId = new Map((taskQueueState.items || []).map((item) => [String(item.id), item]));
+    const ids = [...selectedTaskQueueIds(dialog)]
+      .filter((id) => String(byId.get(id)?.status || '') === 'paused')
+      .map((id) => Number(id))
+      .filter((id) => id > 0);
+    if (!ids.length) return;
+    await send('QUEUE_RESUME', { ids });
+    if (ids.length === 1) {
+      const snap = byId.get(String(ids[0]));
+      setFlash(snap ? `Resumed · ${taskQueueItemFullTitle(snap)}` : 'Download resumed');
+    } else {
+      setFlash(`Resumed ${ids.length} downloads`);
+    }
+    await refreshTaskQueues();
+    await refreshQueue();
+  }
+
+  async function commitTaskQueueOrder(ids) {
+    await send('QUEUE_REORDER', { ids: ids.map((x) => Number(x)) });
+    await refreshTaskQueues();
+  }
+
+  function clearTaskQueueDropMarks(list) {
+    list?.querySelectorAll?.('.is-drop-before, .is-drop-after, .is-dragging').forEach((el) => {
+      el.classList.remove('is-drop-before', 'is-drop-after', 'is-dragging');
+    });
+    list?.classList?.remove('is-drop-end');
+  }
+
+  function taskQueueInsertIndex(list, clientY, dragRow) {
+    const rows = [...list.querySelectorAll(`.${NS}-tasks-item`)];
+    if (!rows.length) return 0;
+    let insertAt = rows.length;
+    for (let i = 0; i < rows.length; i += 1) {
+      const rect = rows[i].getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (clientY < mid) {
+        insertAt = i;
+        break;
+      }
+    }
+    const liveCount = rows.filter((r) => r.classList.contains('is-live')).length;
+    if (liveCount && dragRow && !dragRow.classList.contains('is-live') && insertAt < liveCount) {
+      insertAt = liveCount;
+    }
+    return insertAt;
+  }
+
+  function paintTaskQueueDropMarks(list, insertAt, dragRow) {
+    const rows = [...list.querySelectorAll(`.${NS}-tasks-item`)];
+    rows.forEach((row) => row.classList.remove('is-drop-before', 'is-drop-after'));
+    list.classList.remove('is-drop-end');
+    if (!rows.length) return;
+    const from = rows.indexOf(dragRow);
+    if (from >= 0 && (insertAt === from || insertAt === from + 1)) return;
+    if (insertAt >= rows.length) {
+      rows[rows.length - 1].classList.add('is-drop-after');
+      list.classList.add('is-drop-end');
+      return;
+    }
+    rows[insertAt].classList.add('is-drop-before');
+  }
+
+  function bindTaskQueueDrag(list) {
+    if (!list || list.dataset.hxyDragBound) return;
+    list.dataset.hxyDragBound = '1';
+    list.addEventListener('dragstart', (event) => {
+      const row = event.target.closest?.(`.${NS}-tasks-item`);
+      if (!row || !list.contains(row) || !row.draggable) {
+        event.preventDefault();
+        return;
+      }
+      taskQueueDrag = {
+        id: row.dataset.id,
+        row,
+        insertAt: -1,
+        moved: false,
+      };
+      row.classList.add('is-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      try {
+        event.dataTransfer.setData('text/plain', row.dataset.id || '');
+      } catch {
+        /* ignore */
+      }
+      try {
+        event.dataTransfer.setDragImage(row, 24, 16);
+      } catch {
+        /* ignore */
+      }
+    });
+    list.addEventListener('dragend', () => {
+      const moved = !!taskQueueDrag?.moved;
+      clearTaskQueueDropMarks(list);
+      taskQueueDrag = null;
+      if (moved) {
+        list.dataset.hxySkipSelectClick = '1';
+        setTimeout(() => {
+          delete list.dataset.hxySkipSelectClick;
+        }, 0);
+      }
+      refreshTaskQueues().catch(() => {});
+    });
+    list.addEventListener('dragover', (event) => {
+      if (!taskQueueDrag) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      taskQueueDrag.moved = true;
+      const insertAt = taskQueueInsertIndex(list, event.clientY, taskQueueDrag.row);
+      taskQueueDrag.insertAt = insertAt;
+      paintTaskQueueDropMarks(list, insertAt, taskQueueDrag.row);
+    });
+    list.addEventListener('dragleave', (event) => {
+      if (!taskQueueDrag) return;
+      if (list.contains(event.relatedTarget)) return;
+      list.querySelectorAll('.is-drop-before, .is-drop-after').forEach((el) => {
+        el.classList.remove('is-drop-before', 'is-drop-after');
+      });
+      list.classList.remove('is-drop-end');
+    });
+    list.addEventListener('drop', (event) => {
+      event.preventDefault();
+      if (!taskQueueDrag) return;
+      const rows = [...list.querySelectorAll(`.${NS}-tasks-item`)];
+      const from = rows.indexOf(taskQueueDrag.row);
+      let insertAt =
+        taskQueueDrag.insertAt >= 0
+          ? taskQueueDrag.insertAt
+          : taskQueueInsertIndex(list, event.clientY, taskQueueDrag.row);
+      clearTaskQueueDropMarks(list);
+      list.dataset.hxySkipSelectClick = '1';
+      setTimeout(() => {
+        delete list.dataset.hxySkipSelectClick;
+      }, 0);
+      if (from < 0 || taskQueueDrag.row.classList.contains('is-live')) {
+        taskQueueDrag = null;
+        return;
+      }
+      const liveCount = rows.filter((r) => r.classList.contains('is-live')).length;
+      if (insertAt < liveCount) insertAt = liveCount;
+      if (insertAt === from || insertAt === from + 1) {
+        taskQueueDrag = null;
+        return;
+      }
+      const ids = rows.map((r) => r.dataset.id);
+      const [moved] = ids.splice(from, 1);
+      if (insertAt > from) insertAt -= 1;
+      ids.splice(insertAt, 0, moved);
+      const liveIds = rows.filter((r) => r.classList.contains('is-live')).map((r) => r.dataset.id);
+      if (liveIds.length) {
+        const rest = ids.filter((id) => !liveIds.includes(id));
+        ids.splice(0, ids.length, ...liveIds, ...rest);
+      }
+      taskQueueDrag = null;
+      commitTaskQueueOrder(ids).catch((err) => setError(err?.message || String(err)));
+    });
+  }
+
+  function ensureTaskQueueDialog() {
+    let dialog = qs(document, `.${NS}-tasks-dialog`);
+    if (
+      dialog &&
+      (!qs(dialog, '[data-act="tasks-delete"]') ||
+        !qs(dialog, '[data-act="tasks-clear-selection"]') ||
+        !qs(dialog, 'button[value="cancel"]'))
+    ) {
+      dialog.remove();
+      dialog = null;
+    }
+    if (dialog) return dialog;
+    dialog = document.createElement('dialog');
+    dialog.className = `${NS}-tasks-dialog`;
+    dialog.dataset.hxyrule = '1';
+    dialog.innerHTML = `
+      <form method="dialog" class="${NS}-tasks-form">
+        <div class="${NS}-dialog-title">Task queue</div>
+        <section class="${NS}-tasks-pane" aria-label="Download queue">
+          <header class="${NS}-tasks-pane-head">
+            <strong>Download</strong>
+            <div class="${NS}-tasks-pane-tools">
+              <button type="button" class="${NS}-btn ${NS}-tasks-select-all" data-act="tasks-select-all" disabled>Select all</button>
+              <button type="button" class="${NS}-btn ${NS}-tasks-select-all" data-act="tasks-clear-selection" disabled>Clear</button>
+              <span class="${NS}-tasks-count" data-role="download-queue-count">0</span>
+            </div>
+          </header>
+          <ul class="${NS}-tasks-list" data-role="download-queue-list"></ul>
+        </section>
+        <div class="${NS}-dialog-actions">
+          <button type="button" class="${NS}-btn" data-act="tasks-pause" disabled>Pause</button>
+          <button type="button" class="${NS}-btn" data-act="tasks-resume" disabled>Resume</button>
+          <button type="button" class="${NS}-btn" data-act="tasks-delete" disabled>Delete</button>
+          <button type="submit" class="${NS}-btn" value="cancel">Close</button>
+        </div>
+      </form>
+    `;
+    bindTaskQueueDialog(dialog);
+    bindStatusLogEsc(dialog);
+    document.body.appendChild(dialog);
+    return dialog;
+  }
+
+  function bindTaskQueueDialog(dialog) {
+    if (!dialog || dialog.dataset.hxyTasksBound) return;
+    dialog.dataset.hxyTasksBound = '1';
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) {
+        dialog.close();
+        return;
+      }
+      const select = event.target.closest?.(`.${NS}-tasks-item-select`);
+      if (select && dialog.contains(select)) {
+        event.preventDefault();
+        const list = select.closest?.(`.${NS}-tasks-list`);
+        if (list?.dataset?.hxySkipSelectClick) return;
+        const on = !select.classList.contains('is-selected');
+        select.classList.toggle('is-selected', on);
+        select.setAttribute('aria-pressed', on ? 'true' : 'false');
+        select.closest(`.${NS}-tasks-item`)?.classList.toggle('is-selected', on);
+        updateTaskQueueActionButtons(dialog);
+        return;
+      }
+      const actionBtn = event.target.closest?.('[data-act]');
+      if (!actionBtn || !dialog.contains(actionBtn)) return;
+      const act = actionBtn.dataset.act;
+      if (act === 'tasks-delete') {
+        event.preventDefault();
+        removeSelectedTaskQueueItems().catch((err) => setError(err?.message || String(err)));
+      } else if (act === 'tasks-select-all') {
+        event.preventDefault();
+        setTaskQueueItemsSelected(dialog, true);
+      } else if (act === 'tasks-clear-selection') {
+        event.preventDefault();
+        setTaskQueueItemsSelected(dialog, false);
+      } else if (act === 'tasks-pause') {
+        event.preventDefault();
+        pauseTaskQueue().catch((err) => setError(err?.message || String(err)));
+      } else if (act === 'tasks-resume') {
+        event.preventDefault();
+        resumeTaskQueue().catch((err) => setError(err?.message || String(err)));
+      }
+    });
+    dialog.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const select = event.target.closest?.(`.${NS}-tasks-item-select`);
+      if (!select || !dialog.contains(select)) return;
+      event.preventDefault();
+      const on = !select.classList.contains('is-selected');
+      select.classList.toggle('is-selected', on);
+      select.setAttribute('aria-pressed', on ? 'true' : 'false');
+      select.closest(`.${NS}-tasks-item`)?.classList.toggle('is-selected', on);
+      updateTaskQueueActionButtons(dialog);
+    });
+    dialog.addEventListener('close', () => {
+      taskQueueDrag = null;
+      setTaskQueuePolling(false);
+    });
+    bindTaskQueueDrag(qs(dialog, '[data-role="download-queue-list"]'));
+  }
+
+  function openTaskQueueDialog() {
+    const dialog = ensureTaskQueueDialog();
+    bindTaskQueueDialog(dialog);
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    setTaskQueuePolling(true);
+    refreshTaskQueues().catch((err) => setError(err?.message || String(err)));
+    requestAnimationFrame(() => {
+      const closeBtn = qs(dialog, 'button[value="close"], button[value="cancel"]');
+      (closeBtn || dialog).focus?.();
+    });
+  }
+
   function bindStatusLogUi(el) {
     if (!el || el.dataset.logBound === '1') return;
     el.dataset.logBound = '1';
@@ -1353,7 +1971,14 @@
   }
 
   function setLiveStatus(text) {
-    statusLive = String(text || '').trim() || 'Ready';
+    const next = String(text || '').trim() || 'Ready';
+    const changed = next !== statusLive;
+    statusLive = next;
+    if (statusFlash) {
+      // Chip still shows a flash; still record queue transitions in the log.
+      if (changed) pushStatusLog(statusLive, false);
+      return;
+    }
     paintStatus();
   }
 
@@ -1583,6 +2208,7 @@
             link?.textContent?.trim() ||
             videoId;
           const href = link?.getAttribute('href') || '';
+          const meta = cardMetaFromEl(el);
           return {
             videoId: String(videoId),
             detailUrl: href.startsWith('http')
@@ -1594,6 +2220,11 @@
             favoritePage: pageNum,
             cardIndex: index,
             durationSec: cardDurationSec(el),
+            thumbUrl: cardThumbUrl(el),
+            previewUrl: cardPreviewUrl(el),
+            viewsText: meta.viewsText,
+            ratingText: meta.ratingText,
+            addedText: meta.addedText,
           };
         })
         .filter(Boolean);
@@ -1611,6 +2242,11 @@
         favoritePage: pageNum,
         cardIndex: index,
         durationSec: null,
+        thumbUrl: '',
+        previewUrl: '',
+        viewsText: '',
+        ratingText: '',
+        addedText: '',
       });
     });
     return items;
@@ -1703,6 +2339,8 @@
     if (el.classList?.contains(`${NS}-jumpbar`)) return true;
     if (el.classList?.contains(`${NS}-favcount`)) return true;
     if (el.classList?.contains(`${NS}-thumbs-clear`)) return true;
+    if (el.classList?.contains(`${NS}-compact-thumbs`)) return true;
+    if (el.classList?.contains(`${NS}-compact-pager`)) return true;
     if (el.classList?.contains('thumbs')) return true;
     if (el.id === 'list_videos_my_favourite_videos_pagination') return true;
     if (el.id?.endsWith?.('_pagination')) return true;
@@ -1710,7 +2348,7 @@
     if (el.id?.endsWith?.('_items')) return true;
     if (el.classList?.contains('pagination')) return true;
     if (el.querySelector?.(
-      '.item.thumb, .pagination, .thumbs, .hxyrule-topstack, #list_videos_my_favourite_videos_pagination',
+      '.item.thumb, .pagination, .thumbs, .hxyrule-topstack, .hxyrule-compact-pager, #list_videos_my_favourite_videos_pagination',
     )) {
       return true;
     }
@@ -1822,8 +2460,24 @@
         stack.insertBefore(el, stack.firstChild);
       }
     });
-    if (list && list.nextElementSibling !== stack) {
-      list.insertAdjacentElement('afterend', stack);
+    // Keep exactly title? + controls + jumprow — stray siblings become a 4th toolbar row.
+    Array.from(stack.children).forEach((child) => {
+      if (!ordered.includes(child)) child.remove();
+    });
+    // Anchor stack after compact pager (or host) so trimBelowControls cannot
+    // hide the match pager when it sits between host and native list.
+    const compactPager = qs(document, `.${NS}-compact-pager`);
+    const compactHost = qs(document, `.${NS}-compact-thumbs`);
+    const stackAnchor = compactPager || compactHost || list;
+    if (stackAnchor && stackAnchor.nextElementSibling !== stack) {
+      stackAnchor.insertAdjacentElement('afterend', stack);
+    }
+    if (compactViewActive) {
+      ensureCompactPagerMounted();
+      qsa(document, `.${NS}-compact-pager`).forEach((el) => {
+        el.classList.remove('hxyrule-hide-native');
+        el.style.removeProperty('display');
+      });
     }
     // Drop legacy playlist spacer if an older build left one behind.
     qs(stack, `.${NS}-gap-pag-jump`)?.remove();
@@ -2487,14 +3141,22 @@
   /** Full-page card count (never last-page short count). */
   let stablePerPage = null;
   let selCountCached = 0;
-  /** While Page range is collecting: { current, total } for Clear · (a/b) page tasks. */
+  /** While Page range is collecting: { base, fetched, total } for Clear · N + (a/b). */
   let selProgress = null;
-  let stopLabelCached = 'idle';
+  /** True while collectPages is in flight (only one Page range at a time). */
+  let selCollectRunning = false;
+  /** Set by Clear to abort the in-flight collectPages loop. */
+  let selCollectCancel = false;
+  let downloadProgressLabel = 'idle'; // e.g. "0/3" while queue session runs
   let dlSession = { active: false, total: 0, baselineCompleted: 0 };
   let rebuildRunning = false;
+  let renumberPollTimer = null;
   let lastRenumberStats = null; // { done, total } pages after last successful renumber
+  let renumberProgressLabel = ''; // e.g. "3/100" while background renumber runs
   let indexRunning = false;
+  let indexPollTimer = null;
   let lastIndexStats = null; // { done, total } pages after last successful index build
+  let indexProgressLabel = ''; // e.g. "3/100" while background index runs
   let filterRunning = false;
   let playlistRunning = false;
   let favAddRunning = false;
@@ -2521,6 +3183,17 @@
     matchCount: null,
     active: false,
   };
+  /** Compact matches view: hide native thumbs, show only matched cards in index order. */
+  let compactViewActive = false;
+  /** Full match list for compact view (index order); rendered a page at a time. */
+  let compactMatchedItems = [];
+  let compactPage = 1;
+  /**
+   * Snapshot of a live native card (clone + pixel metrics) taken before the
+   * native grid is hidden. Reused across compact pages so getComputedStyle on
+   * display:none samples cannot collapse thumb width.
+   */
+  let compactCardTemplate = null;
   /**
    * Dirty flags: set when stores may lag behind site/disk; cleared by Scan,
    * Build/Refresh, or successful index patches. Show matches refreshes only
@@ -2583,7 +3256,9 @@
    * drop it so the page is not still filtered by the previous Show matches result.
    */
   function invalidateFrozenView() {
-    if (!filterState.active && !filterState.matchedIds) return;
+    const hadView = !!(filterState.active || filterState.matchedIds || compactViewActive);
+    exitCompactView();
+    if (!hadView && !filterState.active && !filterState.matchedIds) return;
     filterState.active = false;
     filterState.matchedIds = null;
     filterState.matchCount = null;
@@ -2593,7 +3268,7 @@
 
   /** Drop frozen View when a store it depended on changed (Edit, download, dirty). */
   function invalidateFrozenViewForStoreChange() {
-    if (!filterState.active && !filterState.matchedIds) return;
+    if (!filterState.active && !filterState.matchedIds && !compactViewActive) return;
     // Edit patches always clear View (selection set changed). Dirty-only paths
     // use frozenViewStoresDirty via All matches; downloads pass forceDisk below.
     invalidateFrozenView();
@@ -2601,7 +3276,7 @@
   }
 
   function invalidateFrozenViewIfDiskChanged() {
-    if (!filterState.active && !filterState.matchedIds) return;
+    if (!filterState.active && !filterState.matchedIds && !compactViewActive) return;
     if (viewDeps && !viewDeps.disk) return;
     invalidateFrozenView();
     updateFilterBarLabels();
@@ -2743,6 +3418,11 @@
         favoritePage: Number(it.favoritePage) || 0,
         cardIndex: Number.isInteger(it.cardIndex) ? it.cardIndex : 0,
         durationSec: coerceDurationSec(it.durationSec),
+        thumbUrl: normalizeThumbUrl(it.thumbUrl),
+        previewUrl: normalizeThumbUrl(it.previewUrl),
+        viewsText: normalizeMetaText(it.viewsText),
+        ratingText: normalizeMetaText(it.ratingText),
+        addedText: normalizeMetaText(it.addedText),
       });
     });
     if (!added) {
@@ -2860,18 +3540,30 @@
     const clearBtn = qs(root, `[data-act="clear"]`);
     if (clearBtn) {
       if (selProgress) {
-        // (a/b) = ath page among b pages being collected.
-        clearBtn.textContent = `Clear · (${selProgress.current}/${selProgress.total})`;
+        // N + (a/b) = selection before range · videos fetched so far / expected in range.
+        clearBtn.textContent = `Clear · ${selProgress.base} + (${selProgress.fetched}/${selProgress.total})`;
+        clearBtn.title = 'Stop Page range and clear selection';
       } else {
         clearBtn.textContent = `Clear · ${selCountCached}`;
+        clearBtn.title = 'Clear selection';
+      }
+    }
+    const downloading = !!(downloadProgressLabel && downloadProgressLabel !== 'idle');
+    const downloadBtn = qs(root, `[data-act="download"]`);
+    if (downloadBtn) {
+      if (downloading) {
+        downloadBtn.textContent = `+ Download (${downloadProgressLabel})`;
+        downloadBtn.title = 'Append selected videos to the active download queue';
+      } else {
+        downloadBtn.textContent = 'Download';
+        downloadBtn.title = 'Queue selected videos for download';
       }
     }
     const stopBtn = qs(root, `[data-act="stop"]`);
     if (stopBtn) {
-      const downloading = !!(stopLabelCached && stopLabelCached !== 'idle');
       stopBtn.hidden = !downloading;
       stopBtn.disabled = !downloading;
-      stopBtn.textContent = downloading ? `Stop (${stopLabelCached})` : 'Stop';
+      stopBtn.textContent = 'Stop';
     }
     const selectPageBtn = qs(root, `[data-act="select-page"]`);
     if (selectPageBtn) {
@@ -2885,12 +3577,35 @@
         : 'Select all visible videos on this page (click again to deselect)';
     }
     const rebuildBtn = qs(root, `[data-act="rebuild-ordinals"]`);
-    if (rebuildBtn && !rebuildRunning) {
-      rebuildBtn.textContent =
-        lastRenumberStats != null
-          ? `Renumber (${lastRenumberStats.done}/${lastRenumberStats.total})`
-          : 'Renumber';
-      rebuildBtn.disabled = false;
+    const renumberStop = qs(root, `[data-act="renumber-stop"]`);
+    if (renumberStop) {
+      renumberStop.hidden = !rebuildRunning;
+      renumberStop.disabled = !rebuildRunning;
+      renumberStop.textContent = 'Stop';
+    }
+    if (rebuildBtn) {
+      if (rebuildRunning) {
+        rebuildBtn.disabled = true;
+        rebuildBtn.textContent = renumberProgressLabel
+          ? `Renumber (${renumberProgressLabel})`
+          : 'Renumber…';
+        rebuildBtn.title = 'Renumber running (survives refresh; Stop to cancel).';
+      } else if (indexRunning) {
+        rebuildBtn.disabled = true;
+        rebuildBtn.textContent =
+          lastRenumberStats != null
+            ? `Renumber (${lastRenumberStats.done}/${lastRenumberStats.total})`
+            : 'Renumber';
+        rebuildBtn.title = 'Wait for Build/Refresh index to finish (or Stop it), then Renumber.';
+      } else {
+        rebuildBtn.disabled = false;
+        rebuildBtn.textContent =
+          lastRenumberStats != null
+            ? `Renumber (${lastRenumberStats.done}/${lastRenumberStats.total})`
+            : 'Renumber';
+        rebuildBtn.title =
+          'Rebuild global Favorites ordinals and rename local files (survives refresh; Stop to cancel).';
+      }
     }
     const favAddBtn = qs(root, `[data-act="fav-add"]`);
     if (favAddBtn && !favAddRunning) {
@@ -2928,36 +3643,85 @@
       btn.removeAttribute('title');
     });
     const idxBtn = qs(bar, '[data-act="index-build"]');
-    if (idxBtn && !indexRunning) {
-      if (lastIndexStats != null) {
-        const verb = favIndexCache?.videos?.length ? 'Refresh index' : 'Build index';
-        idxBtn.textContent = `${verb} (${lastIndexStats.done}/${lastIndexStats.total})`;
+    const idxStop = qs(bar, '[data-act="index-stop"]');
+    if (idxStop) {
+      idxStop.hidden = !indexRunning;
+      idxStop.disabled = !indexRunning;
+      idxStop.textContent = 'Stop';
+    }
+    if (idxBtn) {
+      if (indexRunning) {
+        idxBtn.disabled = true;
+        idxBtn.textContent = indexProgressLabel
+          ? `Indexing (${indexProgressLabel})`
+          : 'Indexing…';
+        idxBtn.title = 'Indexing running (survives refresh; Stop to cancel).';
+      } else if (rebuildRunning) {
+        if (lastIndexStats != null) {
+          const verb = favIndexCache?.videos?.length ? 'Refresh index' : 'Build index';
+          idxBtn.textContent = `${verb} (${lastIndexStats.done}/${lastIndexStats.total})`;
+        } else {
+          idxBtn.textContent = favIndexCache?.videos?.length ? 'Refresh index' : 'Build index';
+        }
+        idxBtn.disabled = true;
+        idxBtn.title = 'Wait for Renumber to finish (or Stop it), then Build/Refresh index.';
       } else {
-        idxBtn.textContent = favIndexCache?.videos?.length ? 'Refresh index' : 'Build index';
-      }
-      idxBtn.disabled = false;
-      if (isPlaylistDetailPage()) {
-        idxBtn.title =
-          'Indexes this playlist. Favorited/Unfavorited uses the Favorites index (built on Show matches if missing, or via Build index on My Favorites).';
-      } else {
-        idxBtn.title =
-          'Indexes My Favorites. In playlist / Not in playlist needs every playlist indexed separately.';
+        if (lastIndexStats != null) {
+          const verb = favIndexCache?.videos?.length ? 'Refresh index' : 'Build index';
+          idxBtn.textContent = `${verb} (${lastIndexStats.done}/${lastIndexStats.total})`;
+        } else {
+          idxBtn.textContent = favIndexCache?.videos?.length ? 'Refresh index' : 'Build index';
+        }
+        idxBtn.disabled = false;
+        if (isPlaylistDetailPage()) {
+          idxBtn.title =
+            'Indexes this playlist in the background (survives refresh; Stop to cancel). Favorited/Unfavorited uses the Favorites index.';
+        } else {
+          idxBtn.title =
+            'Indexes My Favorites in the background (survives refresh; Stop to cancel). In playlist / Not in playlist needs every playlist indexed separately.';
+        }
       }
     }
+    // Keep Renumber grey while index runs even if only the filter bar refreshed.
+    const rebuildBtn = qs(document, `[data-act="rebuild-ordinals"]`);
+    if (rebuildBtn && !rebuildRunning) {
+      rebuildBtn.disabled = !!indexRunning;
+      rebuildBtn.title = indexRunning
+        ? 'Wait for Build/Refresh index to finish (or Stop it), then Renumber.'
+        : 'Rebuild global Favorites ordinals and rename local files (survives refresh; Stop to cancel).';
+    }
     const applyBtn = qs(bar, '[data-act="filter-apply"]');
+    const compactBtn = qs(bar, '[data-act="filter-compact"]');
     const showAllBtn = qs(bar, '[data-act="filter-show-all"]');
     if (applyBtn && !filterRunning) {
       applyBtn.disabled = false;
-      if (filterState.active && filterState.matchCount != null) {
+      if (filterState.active && filterState.matchCount != null && !compactViewActive) {
         applyBtn.textContent = `Show matches (${formatFavCount(filterState.matchCount)})`;
       } else {
         applyBtn.textContent = 'Show matches';
       }
-      applyBtn.classList.toggle('is-active-view', !!filterState.active);
+      applyBtn.classList.toggle(
+        'is-active-view',
+        !!filterState.active && !compactViewActive,
+      );
+    }
+    if (compactBtn && !filterRunning) {
+      compactBtn.disabled = false;
+      if (compactViewActive && filterState.matchCount != null) {
+        compactBtn.textContent = `Compact (${formatFavCount(filterState.matchCount)})`;
+      } else {
+        compactBtn.textContent = 'Compact';
+      }
+      compactBtn.classList.toggle('is-active-view', !!compactViewActive);
+      compactBtn.title =
+        'Compact matches: show only matching videos as full cards in list order (paged). Uses the list index; Refresh index to store thumbnails, meta, and hover previews. Match pager is below the grid — separate from the toolbar page bar.';
     }
     if (showAllBtn && !filterRunning) {
       showAllBtn.disabled = false;
-      showAllBtn.classList.toggle('is-active-view', !filterState.active);
+      showAllBtn.classList.toggle(
+        'is-active-view',
+        !filterState.active && !compactViewActive,
+      );
     }
     const plBtn = qs(bar, '[data-act="playlist-add"]');
     if (plBtn && !playlistRunning) {
@@ -2982,15 +3746,18 @@
       qs(box, '[data-act="filter-favorite"]') &&
       qs(box, '[data-act="filter-playlist"]') &&
       qs(box, '[data-act="filter-show-all"]') &&
+      qs(box, '[data-act="filter-compact"]') &&
       qs(box, `.${NS}-view-seg`) &&
       qs(box, '[data-act="filter-reset"]') &&
       qs(box, '[data-act="delete-favs"]') &&
       qs(box, '[data-act="index-build"]') &&
+      qs(box, '[data-act="index-stop"]') &&
       qs(box, '[data-act="select-page"]') &&
       qs(box, '[data-act="select-pages"]') &&
       qs(box, '[data-act="select-matches"]') &&
       qs(box, '[data-act="scan"]') &&
       qs(box, '[data-act="wake-queue"]') &&
+      qs(box, '[data-act="open-tasks"]') &&
       qs(box, '[data-act="playlist-add"]') &&
       qs(box, `.${NS}-act-row`) &&
       qs(box, `[data-role="act-sync"]`) &&
@@ -3018,6 +3785,7 @@
       // Favorites-only Renumber (global ordinals) and Prune local; playlist must not show them.
       const hasFavAdd = !!qs(box, '[data-act="fav-add"]');
       const hasRenumber = !!qs(box, '[data-act="rebuild-ordinals"]');
+      const hasRenumberStop = !!qs(box, '[data-act="renumber-stop"]');
       const hasPrune = !!qs(box, '[data-act="prune-local"]');
       const favBtn = qs(box, '[data-act="fav-add"]');
       const delBtn = qs(box, '[data-act="delete-favs"]');
@@ -3028,6 +3796,7 @@
       if (
         wantFavAdd !== hasFavAdd ||
         wantRenumber !== hasRenumber ||
+        wantRenumber !== hasRenumberStop ||
         wantPrune !== hasPrune ||
         (hasFavAdd && !favBeforeDel)
       ) {
@@ -3051,7 +3820,10 @@
     const renumberBtn = wantRenumber
       ? `
           <span class="${NS}-sep" aria-hidden="true"></span>
-          <button type="button" class="${NS}-btn" data-act="rebuild-ordinals">Renumber</button>`
+          <div class="${NS}-btn-pair" role="group" aria-label="Renumber controls">
+            <button type="button" class="${NS}-btn" data-act="rebuild-ordinals">Renumber</button>
+            <button type="button" class="${NS}-btn" data-act="renumber-stop" hidden>Stop</button>
+          </div>`
       : '';
     const pruneBtn = wantPrune
       ? `
@@ -3086,6 +3858,7 @@
           <span class="${NS}-sep" aria-hidden="true"></span>
           <div class="${NS}-btn-pair ${NS}-view-seg" role="group" aria-label="View mode">
             <button type="button" class="${NS}-btn" data-act="filter-apply">Show matches</button>
+            <button type="button" class="${NS}-btn" data-act="filter-compact">Compact</button>
             <button type="button" class="${NS}-btn" data-act="filter-show-all">Show all</button>
           </div>
         </section>
@@ -3126,11 +3899,16 @@
             </div>
             <span class="${NS}-sep" aria-hidden="true"></span>
             <button type="button" class="${NS}-btn" data-act="wake-queue">Wake queue</button>
+            <span class="${NS}-sep" aria-hidden="true"></span>
+            <button type="button" class="${NS}-btn" data-act="open-tasks" aria-label="Task queue">Tasks</button>
           </section>
           <section class="${NS}-step" data-role="act-index" aria-label="Build indexes">
             <strong class="${NS}-step-name">Index</strong>
             <span class="${NS}-sep" aria-hidden="true"></span>
-            <button type="button" class="${NS}-btn" data-act="index-build">Build index</button>${renumberBtn}
+            <div class="${NS}-btn-pair" role="group" aria-label="Index controls">
+              <button type="button" class="${NS}-btn" data-act="index-build">Build index</button>
+              <button type="button" class="${NS}-btn" data-act="index-stop" hidden>Stop</button>
+            </div>${renumberBtn}
           </section>
           <section class="${NS}-step" data-role="act-edit" aria-label="Edit library">
             <strong class="${NS}-step-name">Edit</strong>
@@ -3167,84 +3945,214 @@
     placeControls(bar);
   }
 
-  async function buildFavIndex({ force = true } = {}) {
-    if (indexRunning) return favIndexCache;
-    if (!force && favIndexCache?.videos?.length) return favIndexCache;
-    indexRunning = true;
-    setError('');
-    const btn = qs(document, `.${NS}-controls [data-act="index-build"]`) ||
-      qs(document, `.${NS}-filterbar [data-act="index-build"]`);
-    const maxPage = maxPageNumber();
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = `Indexing 0/${maxPage}`;
-    }
-    const videos = [];
-    const seen = new Set();
-    try {
-      for (let page = 1; page <= maxPage; page += 1) {
-        if (btn) btn.textContent = `Indexing ${page - 1}/${maxPage}`;
-        const data = await fetchListPage(page);
-        const batch = data.items || [];
-        if (page === 1 && batch.length) stablePerPage = batch.length;
-        batch.forEach((it, idx) => {
-          const id = String(it.videoId || '');
-          if (!id || seen.has(id)) return;
-          seen.add(id);
-          videos.push({
-            videoId: id,
-            title: it.title || id,
-            detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/`,
-            favoritePage: Number(it.favoritePage) || page,
-            cardIndex: Number.isInteger(it.cardIndex) ? it.cardIndex : idx,
-            durationSec: coerceDurationSec(it.durationSec),
-          });
-        });
-        if (data.maxPage && data.maxPage > maxPage) {
-          // grow if site reports higher
-        }
-        if (btn) btn.textContent = `Indexing ${page}/${maxPage}`;
-        if (page < maxPage) await new Promise((r) => setTimeout(r, 800));
-      }
-      if (!videos.length) throw new Error('indexed 0 videos — check login / page parse');
-      scanFavTotal = videos.length;
-      lastIndexStats = { done: maxPage, total: maxPage };
-      const index = {
-        builtAt: Date.now(),
-        favTotal: videos.length,
-        videos,
-        scope: indexScopeKey(),
-      };
-      favIndexCache = index;
-      await send('FAV_INDEX_SET', { index, scope: indexScopeKey() });
-      listIndexDirty = false;
-      if (!isPlaylistDetailPage()) {
-        myFavIdSet = new Set(videos.map((v) => String(v.videoId)));
-        favoritesIndexDirty = false;
-      } else {
-        invalidatePlaylistMembershipCache();
-        playlistIndexesDirty = false;
-      }
-      updateFavCountBar();
-      if (btn) btn.textContent = `Refresh index (${maxPage}/${maxPage})`;
+  function applyIndexJobProgress(st) {
+    if (!st) return;
+    const page = Number(st.page) || 0;
+    const maxPage = Math.max(1, Number(st.maxPage) || 1);
+    const active = st.status === 'running' || st.status === 'stopping';
+    if (st.scope === indexScopeKey()) {
+      indexProgressLabel = active ? `${page}/${maxPage}` : '';
+      indexRunning = active;
       updateFilterBarLabels();
+      return;
+    }
+    // Job belongs to another list — keep it running, but hide Index Stop here.
+    if (indexRunning || indexProgressLabel) {
+      indexRunning = false;
+      indexProgressLabel = '';
+      updateFilterBarLabels();
+    }
+  }
+
+  function stopIndexPoll() {
+    if (indexPollTimer) {
+      clearInterval(indexPollTimer);
+      indexPollTimer = null;
+    }
+  }
+
+  async function adoptIndexJobResult(st) {
+    if (!st) return;
+    if (st.status === 'done') {
+      if (st.scope === indexScopeKey()) {
+        await loadFavIndexCache();
+        const maxPage = Math.max(1, Number(st.maxPage) || 1);
+        lastIndexStats = { done: maxPage, total: maxPage };
+        scanFavTotal = favIndexCache?.videos?.length || scanFavTotal;
+        listIndexDirty = false;
+        if (!isPlaylistDetailPage()) {
+          myFavIdSet = new Set((favIndexCache?.videos || []).map((v) => String(v.videoId)));
+          favoritesIndexDirty = false;
+        } else {
+          invalidatePlaylistMembershipCache();
+          playlistIndexesDirty = false;
+        }
+        updateFavCountBar();
+      } else if (st.scope === 'favorites') {
+        const favIdx = await send('FAV_INDEX_GET', { scope: 'favorites' });
+        myFavIdSet = new Set((favIdx?.videos || []).map((v) => String(v.videoId)));
+        favoritesIndexDirty = false;
+        if (!isPlaylistDetailPage()) {
+          favIndexCache = favIdx;
+          const maxPage = Math.max(1, Number(st.maxPage) || 1);
+          lastIndexStats = { done: maxPage, total: maxPage };
+          scanFavTotal = favIdx?.videos?.length || scanFavTotal;
+          listIndexDirty = false;
+          updateFavCountBar();
+        }
+      }
+    } else if (st.status === 'error') {
+      if (st.scope === indexScopeKey() || st.scope === 'favorites') {
+        setError(`Index failed: ${st.error || 'unknown error'}`);
+      }
+    } else if (st.status === 'stopped') {
+      if (st.scope === indexScopeKey()) {
+        lastIndexStats = null;
+        setLiveStatus('Index stopped');
+      }
+    }
+  }
+
+  async function waitForIndexJob({
+    scope = '',
+    progressEl = null,
+    progressPrefix = 'Indexing',
+  } = {}) {
+    const wantScope = String(scope || '').trim();
+    for (let i = 0; i < 36_000; i += 1) {
+      const st = await send('INDEX_JOB_STATUS');
+      applyIndexJobProgress(st);
+      if (progressEl && st && (!wantScope || st.scope === wantScope)) {
+        const page = Number(st.page) || 0;
+        const maxPage = Math.max(1, Number(st.maxPage) || 1);
+        progressEl.textContent = `${progressPrefix} (${page}/${maxPage})`;
+      }
+      if (!st || (st.status !== 'running' && st.status !== 'stopping')) {
+        await adoptIndexJobResult(st);
+        indexRunning = false;
+        indexProgressLabel = '';
+        updateFilterBarLabels();
+        return st;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error('index job timed out');
+  }
+
+  function startIndexStatusPoll() {
+    if (indexPollTimer) return;
+    indexPollTimer = setInterval(() => {
+      refreshIndexJobUi().catch(() => {});
+    }, 1000);
+  }
+
+  async function refreshIndexJobUi() {
+    const st = await send('INDEX_JOB_STATUS');
+    const active = st && (st.status === 'running' || st.status === 'stopping');
+    if (!active) {
+      stopIndexPoll();
+      if (indexRunning || indexProgressLabel) {
+        await adoptIndexJobResult(st);
+        indexRunning = false;
+        indexProgressLabel = '';
+        updateFilterBarLabels();
+      }
+      return st;
+    }
+    applyIndexJobProgress(st);
+    if (st.scope === indexScopeKey()) startIndexStatusPoll();
+    return st;
+  }
+
+  async function resumeIndexJobUiIfNeeded() {
+    try {
+      const st = await send('INDEX_JOB_STATUS');
+      if (st && (st.status === 'running' || st.status === 'stopping') && st.scope === indexScopeKey()) {
+        indexRunning = true;
+        applyIndexJobProgress(st);
+        updateFilterBarLabels();
+        updateToolbarLabels();
+        startIndexStatusPoll();
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  async function startBackgroundIndexJob({
+    scope,
+    maxPage = 1,
+    playlistId = '',
+    blockId = '',
+    fromKey = '',
+  } = {}) {
+    return await send('INDEX_JOB_START', {
+      scope,
+      maxPage,
+      playlistId,
+      blockId,
+      fromKey,
+    });
+  }
+
+  async function buildFavIndex({ force = true } = {}) {
+    if (!force && favIndexCache?.videos?.length) return favIndexCache;
+    setError('');
+    const scope = indexScopeKey();
+    try {
+      let st = await send('INDEX_JOB_STATUS');
+      if (st?.status === 'running' || st?.status === 'stopping') {
+        if (st.scope !== scope) {
+          throw new Error(
+            `Index already running for ${st.scope} (${st.page}/${st.maxPage}). Stop it first.`,
+          );
+        }
+      } else {
+        const payload = {
+          scope,
+          maxPage: maxPageNumber(),
+        };
+        if (isPlaylistDetailPage()) {
+          payload.playlistId = currentPlaylistIdFromPath() || '';
+          payload.blockId = playlistBlockId();
+          payload.fromKey = playlistFromKey();
+        }
+        st = await startBackgroundIndexJob(payload);
+      }
+      indexRunning = true;
+      applyIndexJobProgress(st);
+      updateFilterBarLabels();
+      startIndexStatusPoll();
+      const finalSt = await waitForIndexJob({ scope });
+      stopIndexPoll();
+      if (finalSt?.status === 'error') {
+        throw new Error(finalSt.error || 'index failed');
+      }
+      if (finalSt?.status === 'stopped') {
+        lastIndexStats = null;
+        return favIndexCache;
+      }
+      await loadFavIndexCache();
       return favIndexCache;
     } catch (err) {
       setError(`Index failed: ${err.message || String(err)}`);
       return favIndexCache;
     } finally {
       indexRunning = false;
+      indexProgressLabel = '';
+      stopIndexPoll();
       updateFilterBarLabels();
+      // If job still running (e.g. navigated away mid-wait), reconnect UI.
+      resumeIndexJobUiIfNeeded().catch(() => {});
     }
   }
 
   /**
-   * Build/refresh the Favorites index via background fetches (works on playlist pages).
+   * Build/refresh the Favorites index via background job (works on playlist pages).
    * Does not replace favIndexCache when the current page is a playlist.
    */
   async function buildFavoritesIndexRemote({ progressEl } = {}) {
     if (favoritesRemoteIndexRunning) {
-      // Wait briefly for an in-flight build rather than starting a second crawl.
       for (let i = 0; i < 600 && favoritesRemoteIndexRunning; i += 1) {
         await new Promise((r) => setTimeout(r, 500));
       }
@@ -3257,57 +4165,218 @@
     };
     try {
       label('Indexing Favorites 0/…');
-      const videos = [];
-      const seen = new Set();
-      let maxPage = 1;
-      for (let page = 1; page <= maxPage; page += 1) {
-        label(`Indexing Favorites ${page - 1}/${maxPage}`);
-        const data = await send('FETCH_FAVORITES_PAGE', { page });
-        const batch = data?.items || [];
-        if (page === 1) {
-          maxPage = Math.max(1, Number(data?.maxPage) || 1);
-          label(`Indexing Favorites 0/${maxPage}`);
-        } else if (data?.maxPage && Number(data.maxPage) > maxPage) {
-          maxPage = Number(data.maxPage);
+      let st = await send('INDEX_JOB_STATUS');
+      if (st?.status === 'running' || st?.status === 'stopping') {
+        if (st.scope !== 'favorites') {
+          throw new Error(
+            `Index already running for ${st.scope} (${st.page}/${st.maxPage}). Stop it first.`,
+          );
         }
-        batch.forEach((it, idx) => {
-          const id = String(it.videoId || '');
-          if (!id || seen.has(id)) return;
-          seen.add(id);
-          videos.push({
-            videoId: id,
-            title: it.title || id,
-            detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/`,
-            favoritePage: Number(it.favoritePage) || page,
-            cardIndex: Number.isInteger(it.cardIndex) ? it.cardIndex : idx,
-            durationSec: coerceDurationSec(it.durationSec),
-          });
+      } else {
+        st = await startBackgroundIndexJob({
+          scope: 'favorites',
+          maxPage: 1,
         });
-        label(`Indexing Favorites ${page}/${maxPage}`);
-        if (page < maxPage) await new Promise((r) => setTimeout(r, 800));
       }
-      if (!videos.length) {
-        throw new Error('Favorites index returned 0 videos — check login');
-      }
-      const index = {
-        builtAt: Date.now(),
-        favTotal: videos.length,
-        videos,
-        scope: 'favorites',
-      };
-      await send('FAV_INDEX_SET', { index, scope: 'favorites' });
-      myFavIdSet = new Set(videos.map((v) => String(v.videoId)));
-      favoritesIndexDirty = false;
-      // On Favorites page, remote build is the list index too.
       if (!isPlaylistDetailPage()) {
-        favIndexCache = index;
-        lastIndexStats = { done: maxPage, total: maxPage };
-        scanFavTotal = videos.length;
-        listIndexDirty = false;
+        indexRunning = true;
+        applyIndexJobProgress(st);
+        updateFilterBarLabels();
+        startIndexStatusPoll();
       }
+      const finalSt = await waitForIndexJob({
+        scope: 'favorites',
+        progressEl,
+        progressPrefix: 'Indexing Favorites',
+      });
+      if (finalSt?.status === 'error') {
+        throw new Error(finalSt.error || 'Favorites index failed');
+      }
+      if (finalSt?.status === 'stopped') {
+        throw new Error('Favorites index was stopped');
+      }
+      await ensureMyFavIdSet({ force: true });
       return myFavIdSet;
     } finally {
       favoritesRemoteIndexRunning = false;
+      if (!isPlaylistDetailPage()) {
+        indexRunning = false;
+        indexProgressLabel = '';
+        stopIndexPoll();
+        updateFilterBarLabels();
+        resumeIndexJobUiIfNeeded().catch(() => {});
+      }
+    }
+  }
+
+  async function doStopIndexJob() {
+    try {
+      await send('INDEX_JOB_STOP');
+      setLiveStatus('Stopping index…');
+      indexRunning = true;
+      updateFilterBarLabels();
+      startIndexStatusPoll();
+      await waitForIndexJob({ scope: indexScopeKey() });
+      lastIndexStats = null;
+    } catch (err) {
+      setError(`Stop index failed: ${err.message || String(err)}`);
+    } finally {
+      indexRunning = false;
+      indexProgressLabel = '';
+      lastIndexStats = null;
+      stopIndexPoll();
+      updateFilterBarLabels();
+    }
+  }
+
+  function applyRenumberJobProgress(st) {
+    if (!st) return;
+    const active = st.status === 'running' || st.status === 'stopping';
+    if (!isFavoritesPage()) {
+      if (rebuildRunning || renumberProgressLabel) {
+        rebuildRunning = false;
+        renumberProgressLabel = '';
+        updateToolbarLabels();
+      }
+      return;
+    }
+    rebuildRunning = active;
+    if (!active) {
+      renumberProgressLabel = '';
+    } else if (st.phase === 'renaming') {
+      renumberProgressLabel = 'renaming…';
+    } else {
+      const page = Number(st.page) || 0;
+      const maxPage = Math.max(1, Number(st.maxPage) || 1);
+      renumberProgressLabel = `${page}/${maxPage}`;
+    }
+    updateToolbarLabels();
+  }
+
+  function stopRenumberPoll() {
+    if (renumberPollTimer) {
+      clearInterval(renumberPollTimer);
+      renumberPollTimer = null;
+    }
+  }
+
+  async function adoptRenumberJobResult(st) {
+    if (!st || !isFavoritesPage()) return;
+    if (st.status === 'done') {
+      const maxPage = Math.max(1, Number(st.maxPage) || 1);
+      lastRenumberStats = { done: maxPage, total: maxPage };
+      scanFavTotal = Number(st.result?.count) || scanFavTotal;
+      try {
+        const scan = await send('HELPER_SCAN');
+        scanned = true;
+        const matches = scan.matches || {};
+        localIdSet = new Set(Object.keys(matches).map(String));
+        lastMatches = matches;
+        scanMatched = Number(scan.matchedCount || 0);
+      } catch (_) {
+        /* optional */
+      }
+      const cards = parseCards();
+      await applyOrdinalsToCards(cards);
+      cards.forEach((card) => renderStatus(card, lastMatches[card.videoId], scanned));
+      syncCurrentPageLocalMark(cards, lastMatches);
+      scheduleEvaluateVisiblePages();
+      const total = Number(st.result?.count) || 0;
+      const renamed = Number(st.result?.renamed) || 0;
+      const errCount = Number(st.result?.errorCount) || 0;
+      const msg =
+        `Renumbered ${total}` +
+        (renamed ? `, renamed ${renamed} file(s)` : ', no files needed rename') +
+        (errCount ? ` (${errCount} rename error(s))` : '') +
+        '.';
+      if (errCount) setError(msg);
+      else setError('');
+      setLiveStatus(msg);
+    } else if (st.status === 'error') {
+      setError(`Renumber failed: ${st.error || 'unknown error'}`);
+    } else if (st.status === 'stopped') {
+      lastRenumberStats = null;
+      setLiveStatus('Renumber stopped');
+    }
+  }
+
+  async function waitForRenumberJob() {
+    for (let i = 0; i < 36_000; i += 1) {
+      const st = await send('RENUMBER_JOB_STATUS');
+      applyRenumberJobProgress(st);
+      if (!st || (st.status !== 'running' && st.status !== 'stopping')) {
+        await adoptRenumberJobResult(st);
+        rebuildRunning = false;
+        renumberProgressLabel = '';
+        updateToolbarLabels();
+        return st;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error('renumber job timed out');
+  }
+
+  function startRenumberStatusPoll() {
+    if (renumberPollTimer) return;
+    renumberPollTimer = setInterval(() => {
+      refreshRenumberJobUi().catch(() => {});
+    }, 1000);
+  }
+
+  async function refreshRenumberJobUi() {
+    const st = await send('RENUMBER_JOB_STATUS');
+    const active = st && (st.status === 'running' || st.status === 'stopping');
+    if (!active) {
+      stopRenumberPoll();
+      if (rebuildRunning || renumberProgressLabel) {
+        await adoptRenumberJobResult(st);
+        rebuildRunning = false;
+        renumberProgressLabel = '';
+        updateToolbarLabels();
+      }
+      return st;
+    }
+    applyRenumberJobProgress(st);
+    if (isFavoritesPage()) startRenumberStatusPoll();
+    return st;
+  }
+
+  async function resumeRenumberJobUiIfNeeded() {
+    try {
+      const st = await send('RENUMBER_JOB_STATUS');
+      if (st && (st.status === 'running' || st.status === 'stopping') && isFavoritesPage()) {
+        rebuildRunning = true;
+        applyRenumberJobProgress(st);
+        updateToolbarLabels();
+        startRenumberStatusPoll();
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  async function resumeBackgroundJobsUi() {
+    await resumeIndexJobUiIfNeeded();
+    await resumeRenumberJobUiIfNeeded();
+  }
+
+  async function doStopRenumberJob() {
+    try {
+      await send('RENUMBER_JOB_STOP');
+      setLiveStatus('Stopping renumber…');
+      rebuildRunning = true;
+      updateToolbarLabels();
+      startRenumberStatusPoll();
+      await waitForRenumberJob();
+      lastRenumberStats = null;
+    } catch (err) {
+      setError(`Stop renumber failed: ${err.message || String(err)}`);
+    } finally {
+      rebuildRunning = false;
+      renumberProgressLabel = '';
+      lastRenumberStats = null;
+      stopRenumberPoll();
+      updateToolbarLabels();
     }
   }
 
@@ -3357,7 +4426,11 @@
 
   function applyFilterToCurrentPage() {
     const cards = parseCards();
-    const matched = filterState.active && filterState.matchedIds ? filterState.matchedIds : null;
+    // Compact view already contains only matches — never gray those cards out.
+    const matched =
+      !compactViewActive && filterState.active && filterState.matchedIds
+        ? filterState.matchedIds
+        : null;
     ignoreMutationsUntil = Date.now() + 400;
     cards.forEach((card) => {
       const on = matched ? matched.has(String(card.videoId)) : true;
@@ -3376,8 +4449,923 @@
     });
   }
 
+  function liveThumbUrlMap() {
+    const map = new Map();
+    const list = favoritesListEl() || document;
+    qsa(list, '.item.thumb').forEach((el) => {
+      if (el.dataset?.hxyruleCompact === '1') return;
+      if (el.closest(`.${NS}-compact-thumbs`)) return;
+      const link = qs(el, 'a.th.js-open-popup, a.th, a[href*="/video/"]');
+      const checkbox =
+        qs(el, 'input.checkbox[name="delete[]"]') ||
+        qs(el, 'input[name="delete[]"]') ||
+        qs(el, 'input[type="checkbox"]');
+      const id =
+        checkbox?.value || (link?.getAttribute('href') || '').match(/\/video\/(\d+)\//)?.[1];
+      if (!id) return;
+      const thumb = cardThumbUrl(el);
+      if (thumb) map.set(String(id), thumb);
+    });
+    return map;
+  }
+
+  function compactPerPage() {
+    const n = cardsPerPageEstimate();
+    return n > 0 ? n : 24;
+  }
+
+  function compactPageCount() {
+    const per = compactPerPage();
+    const total = compactMatchedItems.length;
+    if (!total) return 1;
+    return Math.max(1, Math.ceil(total / per));
+  }
+
+  function sampleNativeCardEl() {
+    const list = favoritesListEl();
+    if (!list) return null;
+    return (
+      qsa(list, '.item.thumb').find(
+        (el) => el.dataset?.hxyruleCompact !== '1' && !el.closest(`.${NS}-compact-thumbs`),
+      ) || null
+    );
+  }
+
+  function findNativeCardEl(videoId) {
+    const id = String(videoId);
+    const list = favoritesListEl() || document;
+    return (
+      qsa(list, '.item.thumb').find((el) => {
+        if (el.dataset?.hxyruleCompact === '1') return false;
+        if (el.closest(`.${NS}-compact-thumbs`)) return false;
+        const checkbox =
+          qs(el, 'input.checkbox[name="delete[]"]') ||
+          qs(el, 'input[name="delete[]"]') ||
+          qs(el, 'input[type="checkbox"]');
+        const link = qs(el, 'a.th.js-open-popup, a.th, a[href*="/video/"]');
+        const vid =
+          checkbox?.value ||
+          (link?.getAttribute('href') || '').match(/\/video\/(\d+)\//)?.[1];
+        return String(vid || '') === id;
+      }) || null
+    );
+  }
+
+  function stripHxyruleCardChrome(el) {
+    if (!el) return;
+    qsa(el, `.${NS}-pick, .${NS}-status`).forEach((node) => node.remove());
+    el.classList.remove(
+      `${NS}-card`,
+      `${NS}-picked`,
+      `${NS}-filtered-out`,
+      `${NS}-compact-native-hidden`,
+      'selected',
+    );
+    el.querySelectorAll('.hxyrule-hide-native').forEach((node) => {
+      node.classList.remove('hxyrule-hide-native');
+    });
+    delete el.dataset.hxyruleCheckBound;
+    const link = qs(el, 'a.th.js-open-popup, a.th');
+    if (!link) return;
+    const title = qs(el, '.thumb_title');
+    const info = qs(el, '.thumb_info');
+    if (title && title.parentElement !== link) link.appendChild(title);
+    if (info && info.parentElement !== link) link.appendChild(info);
+  }
+
+  function captureCompactCardTemplate() {
+    if (compactCardTemplate?.clone) return compactCardTemplate;
+    const sample = sampleNativeCardEl();
+    if (!sample) return compactCardTemplate;
+    const metrics = {};
+    try {
+      const rect = sample.getBoundingClientRect();
+      const cs = getComputedStyle(sample);
+      // Prefer %-width so compact cards keep the native column count. Locking
+      // getBoundingClientRect() px (+ min-width) made cards too wide and left
+      // an empty right column (e.g. 2 cards in a 3-col row).
+      const cssWidth = String(cs.width || '').trim();
+      const parentW =
+        sample.parentElement?.getBoundingClientRect?.().width ||
+        sample.offsetParent?.getBoundingClientRect?.().width ||
+        0;
+      if (cssWidth.endsWith('%')) {
+        metrics.width = cssWidth;
+      } else if (parentW > 1 && rect.width > 1) {
+        const pct = Math.min(100, (rect.width / parentW) * 100);
+        if (pct >= 10 && pct <= 55) metrics.width = `${pct.toFixed(4)}%`;
+      } else if (cssWidth && cssWidth !== 'auto' && cssWidth !== '0px') {
+        metrics.width = cssWidth;
+      }
+      const cssMax = String(cs.maxWidth || '').trim();
+      if (cssMax && cssMax !== 'none' && cssMax !== '0px') metrics.maxWidth = cssMax;
+      ['float', 'display'].forEach((prop) => {
+        const val = cs.getPropertyValue(prop);
+        if (val) metrics[prop] = val;
+      });
+      metrics.boxSizing = 'border-box';
+      const img = qs(sample, 'a.th img, img');
+      if (img) {
+        const ir = img.getBoundingClientRect();
+        if (ir.width > 1 && ir.height > 1) {
+          metrics.imgAspect = (ir.height / ir.width).toFixed(5);
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    const clone = sample.cloneNode(true);
+    stripHxyruleCardChrome(clone);
+    compactCardTemplate = { clone, metrics };
+    return compactCardTemplate;
+  }
+
+  function applyCompactCardMetrics(el, metrics) {
+    if (!el || !metrics) return;
+    el.style.setProperty('box-sizing', 'border-box');
+    const map = {
+      width: 'width',
+      maxWidth: 'max-width',
+      float: 'float',
+      display: 'display',
+    };
+    Object.entries(map).forEach(([key, cssProp]) => {
+      const val = metrics[key];
+      if (val) el.style.setProperty(cssProp, val);
+    });
+    // Never re-apply donor min-width — it forces an empty trailing column.
+    el.style.removeProperty('min-width');
+    const img = qs(el, 'a.th > img, a.th img');
+    if (img) {
+      img.style.width = '100%';
+      img.style.height = 'auto';
+      img.style.objectFit = 'cover';
+      img.style.display = 'block';
+      if (metrics.imgAspect) {
+        img.style.aspectRatio = `1 / ${metrics.imgAspect}`;
+      }
+    }
+  }
+
+  function fillCompactThumbInfo(el, video, { preferExisting = false } = {}) {
+    const link =
+      qs(el, 'a.th.js-open-popup, a.th') || qs(el, 'a[href*="/video/"]');
+    if (!link) return;
+    const pick = qs(el, `.${NS}-pick`);
+    // Prefer the visible pick-rail info. Avoid filling a hidden duplicate left
+    // inside a.th (overflow:hidden) — that made off-page sample cards look bare.
+    let info =
+      (pick && (qs(pick, ':scope > .thumb_info') || qs(pick, '.thumb_info'))) ||
+      qs(el, ':scope > .thumb_info') ||
+      qs(link, ':scope > .thumb_info') ||
+      qs(el, '.thumb_info') ||
+      qs(link, '.thumb_info');
+    const live = cardMetaFromEl(el);
+    const views =
+      normalizeMetaText(video?.viewsText) ||
+      (preferExisting ? live.viewsText : '') ||
+      '';
+    const rating =
+      normalizeMetaText(video?.ratingText) ||
+      (preferExisting ? live.ratingText : '') ||
+      '';
+    const added =
+      normalizeMetaText(video?.addedText) ||
+      (preferExisting ? live.addedText : '') ||
+      '';
+    if (!views && !rating && !added) {
+      if (preferExisting && info && (live.viewsText || live.ratingText || live.addedText)) {
+        return;
+      }
+    }
+    if (!info) {
+      info = document.createElement('div');
+      info.className = 'thumb_info';
+      if (pick) pick.appendChild(info);
+      else link.appendChild(info);
+    }
+    // Drop stray copies so we never leave filled meta clipped under a.th.
+    qsa(el, '.thumb_info').forEach((node) => {
+      if (node !== info) node.remove();
+    });
+    if (pick && info.parentElement !== pick) pick.appendChild(info);
+    info.innerHTML = '';
+    const append = (className, text) => {
+      if (!text) return;
+      const node = document.createElement('div');
+      node.className = className;
+      node.textContent = text;
+      info.appendChild(node);
+    };
+    append('views', views);
+    append('rating', rating);
+    append('added', added);
+  }
+
+  function applyCompactCardDuration(link, video, { preferExisting = false } = {}) {
+    if (!link) return;
+    const durText = formatClockDuration(video?.durationSec);
+    const root = link.closest('.item.thumb') || link;
+    let time = qs(link, '.time') || qs(root, '.time');
+    if (durText) {
+      if (!time) {
+        time = document.createElement('span');
+        time.className = 'time';
+        link.appendChild(time);
+      } else if (time.parentElement !== link) {
+        link.appendChild(time);
+      }
+      time.textContent = durText;
+      return;
+    }
+    if (preferExisting && time && String(time.textContent || '').trim()) {
+      if (time.parentElement !== link) link.appendChild(time);
+      return;
+    }
+    // Drop donor sample duration when this video has no known length.
+    time?.remove();
+  }
+
+  /**
+   * Fresh <img> so cloned donor pixels never flash, and strip hover-preview
+   * attrs that point at CDN files (no /video/{id}/ to rewrite).
+   */
+  function replaceCompactCardImg(link, { thumbUrl, title } = {}) {
+    if (!link) return null;
+    qsa(link, 'video, source').forEach((node) => node.remove());
+    const img = document.createElement('img');
+    img.alt = title || '';
+    img.loading = 'eager';
+    img.decoding = 'async';
+    if (thumbUrl) {
+      img.src = thumbUrl;
+      img.setAttribute('data-original', thumbUrl);
+    } else {
+      img.classList.add(`${NS}-compact-missing-thumb`);
+    }
+    const old = qs(link, 'img');
+    if (old) old.replaceWith(img);
+    else link.insertBefore(img, link.firstChild);
+    return img;
+  }
+
+  function stripStaleCompactHoverMedia(el, id) {
+    if (!el) return;
+    const mediaAttrs = [
+      'data-preview',
+      'data-src',
+      'data-mid',
+      'data-trailer',
+      'data-video',
+      'data-mp4',
+      'data-webm',
+      'data-original',
+      'data-lazy-src',
+      'data-thumb',
+      'srcset',
+    ];
+    const keepIfOwnsId = (raw) => {
+      const u = String(raw || '');
+      if (!u) return false;
+      // Only keep URLs that clearly belong to this video id.
+      return (
+        u.includes(`/video/${id}/`) ||
+        u.includes(`/popup-video/${id}/`) ||
+        u.includes(`/${id}/`) ||
+        u.includes(`_${id}.`) ||
+        u.includes(`/${id}.`)
+      );
+    };
+    qsa(el, 'a, img, video, source, [data-preview], [data-src], [data-mid]').forEach((node) => {
+      mediaAttrs.forEach((attr) => {
+        const raw = node.getAttribute(attr);
+        if (!raw) return;
+        if (attr === 'data-original' || attr === 'data-thumb' || attr === 'data-lazy-src') {
+          // Thumb attrs are reapplied from thumbUrl after this pass.
+          node.removeAttribute(attr);
+          return;
+        }
+        if (!keepIfOwnsId(raw)) node.removeAttribute(attr);
+      });
+    });
+    qsa(el, 'video, source').forEach((node) => {
+      if (node.closest('a.th, .th')) node.remove();
+    });
+  }
+
+  function readCompactHoverPreviewUrl(root) {
+    if (!root) return '';
+    const nodes = [root, ...qsa(root, 'a.th, a, img')];
+    const attrs = ['data-preview', 'data-trailer', 'data-video', 'data-mp4', 'data-webm', 'data-mid'];
+    for (const node of nodes) {
+      if (!node?.getAttribute) continue;
+      for (const attr of attrs) {
+        const raw = String(node.getAttribute(attr) || '').trim();
+        if (!raw || /grey\.gif|spacer|blank|lazy/i.test(raw)) continue;
+        if (/\.(?:mp4|webm|gif|webp)(?:$|\?)/i.test(raw) || /preview|trailer/i.test(raw)) {
+          return raw.startsWith('//') ? `https:${raw}` : raw;
+        }
+      }
+    }
+    return '';
+  }
+
+  function rewriteCompactCardIdentity(
+    el,
+    video,
+    thumbUrl,
+    { preferExistingMeta = false, keepHoverPreview = false } = {},
+  ) {
+    const id = String(video.videoId);
+    const title = String(video.title || id).trim() || id;
+    const detailUrl =
+      video.detailUrl || `https://rule34video.com/video/${id}/`;
+    const popupUrl = `https://rule34video.com/popup-video/${id}/?popup_id=1`;
+    const checkbox =
+      qs(el, 'input.checkbox[name="delete[]"]') ||
+      qs(el, 'input[name="delete[]"]') ||
+      qs(el, 'input[type="checkbox"]');
+    if (checkbox) checkbox.value = id;
+
+    // Sample clones keep the donor card's video_* class and fancybox data-href.
+    // Without rewriting those, online play always opens the sample (often fav #1).
+    const oldId =
+      (el.className.match(/\bvideo_(\d+)\b/) || [])[1] ||
+      (qs(el, 'a[href*="/video/"]')?.getAttribute('href') || '').match(
+        /\/video\/(\d+)\//,
+      )?.[1] ||
+      '';
+    // Prefer indexed preview; fall back to same-card native preview only.
+    const indexedPreview = normalizeThumbUrl(video?.previewUrl);
+    const keepPreview =
+      indexedPreview ||
+      (keepHoverPreview ? readCompactHoverPreviewUrl(el) : '');
+    Array.from(el.classList).forEach((cls) => {
+      if (/^video_\d+$/.test(cls) && cls !== `video_${id}`) el.classList.remove(cls);
+    });
+    el.classList.add(`video_${id}`);
+
+    const rewriteUrlAttr = (node, attr) => {
+      const raw = node.getAttribute(attr);
+      if (!raw) return;
+      let next = raw;
+      if (oldId && oldId !== id) {
+        next = next
+          .replaceAll(`/video/${oldId}/`, `/video/${id}/`)
+          .replaceAll(`/popup-video/${oldId}/`, `/popup-video/${id}/`);
+      }
+      if (/\/popup-video\/\d+\//.test(next) && !next.includes(`/popup-video/${id}/`)) {
+        next = popupUrl;
+      } else if (/\/video\/\d+\//.test(next) && !next.includes(`/video/${id}/`)) {
+        next = detailUrl;
+      }
+      if (next !== raw) node.setAttribute(attr, next);
+    };
+    qsa(el, 'a[href], [data-href]').forEach((node) => {
+      ['href', 'data-href'].forEach((attr) => {
+        rewriteUrlAttr(node, attr);
+      });
+    });
+    qsa(el, 'a.js-click[data-fancybox="ajax"], [data-fancybox="ajax"]').forEach((node) => {
+      const cur = node.getAttribute('data-href') || node.getAttribute('href') || '';
+      if (!cur.includes(`/popup-video/${id}/`)) {
+        node.setAttribute('data-href', popupUrl);
+      }
+    });
+
+    const link =
+      qs(el, 'a.th.js-open-popup, a.th') || qs(el, 'a[href*="/video/"]');
+    if (!link) return;
+    link.href = detailUrl;
+    link.title = title;
+    link.setAttribute('title', title);
+    // Donor sample (fav #1) CDN previews cannot be rewritten by video id — drop them.
+    if (!keepHoverPreview || indexedPreview) stripStaleCompactHoverMedia(el, id);
+    const img = replaceCompactCardImg(link, { thumbUrl, title });
+    if (keepPreview && img) {
+      img.setAttribute('data-preview', keepPreview);
+      link.setAttribute('data-preview', keepPreview);
+      el.dataset.hxyrulePreview = keepPreview;
+    } else {
+      link.removeAttribute('data-preview');
+      delete el.dataset.hxyrulePreview;
+    }
+    applyCompactCardDuration(link, video, { preferExisting: preferExistingMeta });
+    let titleEl = qs(el, '.thumb_title') || qs(link, '.thumb_title');
+    if (!titleEl) {
+      titleEl = document.createElement('strong');
+      titleEl.className = 'thumb_title title';
+      link.appendChild(titleEl);
+    }
+    titleEl.textContent = title;
+    delete titleEl.dataset.hxyruleOrigTitle;
+    fillCompactThumbInfo(el, video, { preferExisting: preferExistingMeta });
+  }
+
+  function buildCompactCardEl(video, thumbUrl, sample, metrics) {
+    const id = String(video.videoId);
+    const title = String(video.title || id).trim() || id;
+    const detailUrl =
+      video.detailUrl || `https://rule34video.com/video/${id}/`;
+    const favPage = Number(video.favoritePage) || 0;
+    const cardIndex = Number.isInteger(video.cardIndex) ? video.cardIndex : 0;
+    const exact = findNativeCardEl(id);
+
+    let el;
+    if (exact) {
+      el = exact.cloneNode(true);
+      stripHxyruleCardChrome(el);
+      // Fresh <img> avoids flash; keep this card's own hover preview URL.
+      rewriteCompactCardIdentity(el, video, thumbUrl, {
+        preferExistingMeta: true,
+        keepHoverPreview: true,
+      });
+    } else if (sample) {
+      el = sample.cloneNode(true);
+      stripHxyruleCardChrome(el);
+      rewriteCompactCardIdentity(el, video, thumbUrl, {
+        preferExistingMeta: false,
+        keepHoverPreview: false,
+      });
+    } else {
+      el = document.createElement('div');
+      el.className = 'item thumb';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'checkbox';
+      checkbox.name = 'delete[]';
+      checkbox.value = id;
+      const link = document.createElement('a');
+      link.className = 'th';
+      link.href = detailUrl;
+      link.title = title;
+      replaceCompactCardImg(link, { thumbUrl, title });
+      const preview = normalizeThumbUrl(video.previewUrl);
+      if (preview) {
+        link.setAttribute('data-preview', preview);
+        el.dataset.hxyrulePreview = preview;
+        const img = qs(link, 'img');
+        if (img) img.setAttribute('data-preview', preview);
+      }
+      applyCompactCardDuration(link, video, { preferExisting: false });
+      const titleEl = document.createElement('strong');
+      titleEl.className = 'thumb_title title';
+      titleEl.textContent = title;
+      link.appendChild(titleEl);
+      el.appendChild(checkbox);
+      el.appendChild(link);
+      fillCompactThumbInfo(el, video, { preferExisting: false });
+    }
+
+    el.classList.add('item', 'thumb');
+    el.dataset.hxyruleCompact = '1';
+    el.dataset.hxyruleFavoritePage = String(favPage);
+    el.dataset.hxyruleCardIndex = String(cardIndex);
+    delete el.dataset.hxyruleCheckBound;
+    el.classList.remove('selected', `${NS}-compact-native-hidden`);
+    applyCompactCardMetrics(el, metrics);
+    return el;
+  }
+
+  /** Site hover-preview is bound to the native list; compact clones need our own. */
+  function bindCompactHoverPreview(el) {
+    if (!el || el.dataset.hxyrulePreviewBound === '1') return;
+    const link = qs(el, 'a.th.js-open-popup, a.th') || qs(el, 'a[href*="/video/"]');
+    if (!link) return;
+    const preview =
+      normalizeThumbUrl(el.dataset.hxyrulePreview) ||
+      readCompactHoverPreviewUrl(el) ||
+      '';
+    if (!preview) return;
+    el.dataset.hxyrulePreviewBound = '1';
+    el.dataset.hxyrulePreview = preview;
+    let videoEl = null;
+    const stop = () => {
+      qsa(link, `video.${NS}-compact-preview`).forEach((node) => {
+        try {
+          node.pause();
+        } catch (_) {
+          /* ignore */
+        }
+        node.remove();
+      });
+      videoEl = null;
+    };
+    const start = () => {
+      if (document.documentElement.classList.contains(`${NS}-online-playing`)) return;
+      if (qs(link, `video.${NS}-compact-preview`)) return;
+      videoEl = document.createElement('video');
+      videoEl.className = `${NS}-compact-preview`;
+      videoEl.src = preview;
+      videoEl.muted = true;
+      videoEl.loop = true;
+      videoEl.playsInline = true;
+      videoEl.setAttribute('playsinline', '');
+      videoEl.preload = 'metadata';
+      link.appendChild(videoEl);
+      const play = videoEl.play();
+      if (play?.catch) play.catch(() => {});
+    };
+    // Start on the thumb link; stop when leaving the whole card (pick rail
+    // included). Avoid link-only mouseleave — moving to the title rail used
+    // to strand the preview video over the thumbnail.
+    link.addEventListener('pointerenter', start);
+    link.addEventListener('mouseenter', start);
+    el.addEventListener('pointerleave', stop);
+    el.addEventListener('mouseleave', stop);
+    link.addEventListener('click', stop, true);
+  }
+
+  function decorateCompactCardEl(el) {
+    const checkbox =
+      qs(el, 'input.checkbox[name="delete[]"]') ||
+      qs(el, 'input[name="delete[]"]') ||
+      qs(el, 'input[type="checkbox"]');
+    const link = qs(el, 'a.th.js-open-popup, a.th') || qs(el, 'a[href*="/video/"]');
+    const videoId =
+      checkbox?.value ||
+      (link?.getAttribute('href') || '').match(/\/video\/(\d+)\//)?.[1];
+    if (!videoId || !link) return null;
+    const indexed = compactMatchedItems.find((v) => String(v?.videoId) === String(videoId));
+    if (indexed) {
+      const preview =
+        normalizeThumbUrl(indexed.previewUrl) ||
+        normalizeThumbUrl(el.dataset.hxyrulePreview) ||
+        readCompactHoverPreviewUrl(el);
+      if (preview) {
+        el.dataset.hxyrulePreview = preview;
+        link.setAttribute('data-preview', preview);
+        const img = qs(link, 'img');
+        if (img) img.setAttribute('data-preview', preview);
+      }
+    }
+    const card = {
+      el,
+      videoId: String(videoId),
+      detailUrl: link.href || `https://rule34video.com/video/${videoId}/`,
+      title: String(
+        qs(el, '.thumb_title')?.textContent || link.getAttribute('title') || videoId,
+      ).trim(),
+      favoritePage: Number(el.dataset.hxyruleFavoritePage) || currentPageNumber(),
+      cardIndex: Number(el.dataset.hxyruleCardIndex) || 0,
+      durationSec: cardDurationSec(el),
+      checkbox,
+      link,
+    };
+    ensurePickRail(card);
+    if (indexed) {
+      // After pick rail exists so meta lands in the visible rail, not under a.th.
+      fillCompactThumbInfo(el, indexed, { preferExisting: true });
+      applyCompactCardDuration(link, indexed, { preferExisting: true });
+    }
+    // Paint path from scan/lookup cache immediately (off-page cards often only
+    // exist in lastScanMatches; refreshLookup refreshes after mount).
+    if (scanned) {
+      const cached = lastMatches[card.videoId] || lastScanMatches[card.videoId];
+      if (hasLocalPathInfo(cached)) {
+        renderStatus(card, { ...cached, exists: true }, true);
+      } else if (cached) {
+        renderStatus(card, cached, true);
+      }
+    }
+    bindCompactHoverPreview(el);
+    return card;
+  }
+
+  function ensureCompactHost(list) {
+    let host = qs(document, `.${NS}-compact-thumbs`);
+    if (host && host.isConnected) {
+      host.classList.remove(`${NS}-native-thumbs-hidden`, `${NS}-compact-native-hidden`);
+      return host;
+    }
+    host = document.createElement('div');
+    // Copy layout classes from the native list, but never its hidden flag.
+    host.className = list.className || 'thumbs';
+    host.classList.remove(
+      `${NS}-native-thumbs-hidden`,
+      `${NS}-compact-native-hidden`,
+    );
+    host.classList.add('thumbs', `${NS}-compact-thumbs`, `${NS}-thumbs-clear`);
+    host.dataset.hxyrule = '1';
+    host.setAttribute('aria-label', 'Compact matches');
+    // Occupy the native list's place under the toolbar — never append after it.
+    list.insertAdjacentElement('beforebegin', host);
+    return host;
+  }
+
+  function removeCompactDom() {
+    qs(document, `.${NS}-compact-pager`)?.remove();
+    qs(document, `.${NS}-compact-thumbs`)?.remove();
+    qsa(document, `.item.thumb[data-hxyrule-compact="1"]`).forEach((el) => el.remove());
+    qsa(document, `.${NS}-compact-native-hidden`).forEach((el) => {
+      el.classList.remove(`${NS}-compact-native-hidden`);
+    });
+    const list = favoritesListEl();
+    if (list) {
+      list.classList.remove(`${NS}-native-thumbs-hidden`);
+      delete list.dataset.hxyruleCompactHost;
+    }
+  }
+
+  function ensureCompactPagerMounted() {
+    if (!compactViewActive) return null;
+    const host = qs(document, `.${NS}-compact-thumbs`);
+    if (!host?.isConnected) return null;
+    let pager = qs(document, `.${NS}-compact-pager`);
+    if (pager?.isConnected) {
+      pager.classList.remove('hxyrule-hide-native');
+      pager.style.removeProperty('display');
+      if (pager.previousElementSibling !== host) {
+        host.insertAdjacentElement('afterend', pager);
+      }
+      return pager;
+    }
+    pager = buildCompactPagerEl();
+    host.insertAdjacentElement('afterend', pager);
+    return pager;
+  }
+
+  function buildCompactPagerEl() {
+    const pages = compactPageCount();
+    const page = Math.min(Math.max(1, compactPage), pages);
+    compactPage = page;
+
+    const wrap = document.createElement('div');
+    wrap.className = `${NS}-compact-pager`;
+    wrap.dataset.hxyrule = '1';
+    wrap.setAttribute('role', 'navigation');
+    wrap.setAttribute('aria-label', 'Compact matches pages');
+
+    const nav = document.createElement('div');
+    nav.className = `${NS}-compact-pager-nav`;
+
+    const addBtn = (label, targetPage, { disabled = false, current = false } = {}) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `${NS}-btn ${NS}-compact-page-btn`;
+      if (current) {
+        btn.classList.add('is-current');
+        btn.setAttribute('aria-current', 'page');
+      }
+      btn.textContent = label;
+      btn.disabled = !!disabled;
+      if (!disabled && !current) {
+        btn.addEventListener('click', () => {
+          goCompactPage(targetPage).catch((err) => {
+            setError(`Compact page failed: ${err.message || String(err)}`);
+          });
+        });
+      }
+      nav.appendChild(btn);
+    };
+
+    const addGap = () => {
+      const dots = document.createElement('span');
+      dots.className = `${NS}-compact-pager-gap`;
+      dots.textContent = '…';
+      nav.appendChild(dots);
+    };
+
+    addBtn('Prev', page - 1, { disabled: page <= 1 });
+
+    const nums = [];
+    const push = (p) => {
+      if (p >= 1 && p <= pages && !nums.includes(p)) nums.push(p);
+    };
+    push(1);
+    for (let p = page - 2; p <= page + 2; p += 1) push(p);
+    push(pages);
+    nums.sort((a, b) => a - b);
+    let prev = 0;
+    nums.forEach((p) => {
+      if (prev && p - prev > 1) addGap();
+      addBtn(String(p), p, { current: p === page });
+      prev = p;
+    });
+
+    addBtn('Next', page + 1, { disabled: page >= pages });
+
+    wrap.appendChild(nav);
+    return wrap;
+  }
+
+  function renderCompactPage() {
+    const list = favoritesListEl();
+    if (!list || !list.parentElement) {
+      throw new Error('Could not find the video list container');
+    }
+    const liveThumbs = liveThumbUrlMap();
+    // Capture size/template while native cards are still laid out.
+    const tpl = captureCompactCardTemplate();
+    const sample = tpl?.clone || sampleNativeCardEl();
+    const metrics = tpl?.metrics || null;
+    ignoreMutationsUntil = Date.now() + 1200;
+
+    // Build the host before hiding the native list so we do not copy the
+    // hidden class onto the compact grid (that made the whole view vanish).
+    const host = ensureCompactHost(list);
+    host.classList.remove(`${NS}-native-thumbs-hidden`, `${NS}-compact-native-hidden`);
+    list.classList.add(`${NS}-native-thumbs-hidden`);
+    list.dataset.hxyruleCompactHost = '1';
+    document.documentElement.classList.add(`${NS}-compact-active`);
+    host.replaceChildren();
+
+    const per = compactPerPage();
+    const pages = compactPageCount();
+    compactPage = Math.min(Math.max(1, compactPage), pages);
+    const slice = compactMatchedItems.slice(
+      (compactPage - 1) * per,
+      compactPage * per,
+    );
+    const frag = document.createDocumentFragment();
+    slice.forEach((v) => {
+      const id = String(v.videoId);
+      const thumb = normalizeThumbUrl(v.thumbUrl) || liveThumbs.get(id) || '';
+      frag.appendChild(buildCompactCardEl(v, thumb, sample, metrics));
+    });
+    host.appendChild(frag);
+
+    // Mount full pick-rail cards immediately (title + meta + select).
+    qsa(host, `.item.thumb[data-hxyrule-compact="1"]`).forEach((el) => {
+      decorateCompactCardEl(el);
+    });
+
+    qs(document, `.${NS}-compact-pager`)?.remove();
+    const pager = buildCompactPagerEl();
+    host.insertAdjacentElement('afterend', pager);
+
+    compactViewActive = true;
+    try {
+      bindListObserver();
+    } catch (_) {
+      /* ignore */
+    }
+    pageFinger = pageFingerprint();
+  }
+
+  async function goCompactPage(page) {
+    if (!compactViewActive) return;
+    const target = Number(page);
+    if (!Number.isInteger(target) || target < 1) return;
+    const pages = compactPageCount();
+    if (target > pages || target === compactPage) return;
+    await captureNativeSelection().catch(() => {});
+    compactPage = target;
+    renderCompactPage();
+    wireCardClicks();
+    await refreshLookup();
+    await restoreSelectionToPage(parseCards());
+    applyFilterToCurrentPage();
+    updateFilterBarLabels();
+    updateToolbarLabels();
+  }
+
+  function exitCompactView() {
+    const hadDom =
+      compactViewActive ||
+      !!qs(document, `.${NS}-compact-thumbs`) ||
+      !!qs(document, `.${NS}-compact-pager`) ||
+      !!qs(document, `.item.thumb[data-hxyrule-compact="1"]`);
+    if (!hadDom) {
+      compactMatchedItems = [];
+      compactPage = 1;
+      compactCardTemplate = null;
+      document.documentElement.classList.remove(`${NS}-compact-active`);
+      return;
+    }
+    ignoreMutationsUntil = Date.now() + 600;
+    compactViewActive = false;
+    compactMatchedItems = [];
+    compactPage = 1;
+    compactCardTemplate = null;
+    document.documentElement.classList.remove(`${NS}-compact-active`);
+    removeCompactDom();
+    try {
+      bindListObserver();
+    } catch (_) {
+      /* ignore */
+    }
+    pageFinger = pageFingerprint();
+  }
+
+  /** Copy views/rating/added/preview/duration from live native cards onto index rows missing them. */
+  function enrichMatchMetaFromLiveDom(items) {
+    const list = Array.isArray(items) ? items : [];
+    if (!list.length) return list;
+    const byId = new Map();
+    qsa(document, '.item.thumb').forEach((el) => {
+      if (el.dataset?.hxyruleCompact === '1') return;
+      if (el.closest(`.${NS}-compact-thumbs`)) return;
+      const checkbox =
+        qs(el, 'input.checkbox[name="delete[]"]') ||
+        qs(el, 'input[name="delete[]"]') ||
+        qs(el, 'input[type="checkbox"]');
+      const link = qs(el, 'a.th.js-open-popup, a.th, a[href*="/video/"]');
+      const id =
+        checkbox?.value ||
+        (link?.getAttribute('href') || '').match(/\/video\/(\d+)\//)?.[1];
+      if (!id) return;
+      const meta = cardMetaFromEl(el);
+      const previewUrl = cardPreviewUrl(el);
+      const durationSec = cardDurationSec(el);
+      if (meta.viewsText || meta.ratingText || meta.addedText || previewUrl || durationSec != null) {
+        byId.set(String(id), { ...meta, previewUrl, durationSec });
+      }
+    });
+    if (!byId.size) return list;
+    return list.map((v) => {
+      const id = String(v?.videoId || '');
+      const live = byId.get(id);
+      if (!live) return v;
+      return {
+        ...v,
+        viewsText: normalizeMetaText(v.viewsText) || live.viewsText,
+        ratingText: normalizeMetaText(v.ratingText) || live.ratingText,
+        addedText: normalizeMetaText(v.addedText) || live.addedText,
+        previewUrl: normalizeThumbUrl(v.previewUrl) || live.previewUrl || '',
+        durationSec:
+          coerceDurationSec(v.durationSec) ?? coerceDurationSec(live.durationSec),
+      };
+    });
+  }
+
+  function enterCompactView(matched) {
+    const list = favoritesListEl();
+    if (!list || !list.parentElement) {
+      throw new Error('Could not find the video list container');
+    }
+    ignoreMutationsUntil = Date.now() + 1200;
+    exitCompactView();
+    compactMatchedItems = enrichMatchMetaFromLiveDom(matched || []);
+    compactPage = 1;
+    renderCompactPage();
+  }
+
+  async function applyCompactMatchesView({ ensureIndex = true } = {}) {
+    if (filterRunning) return;
+    filterRunning = true;
+    setError('');
+    const compactBtn =
+      qs(document, `.${NS}-controls [data-act="filter-compact"]`) ||
+      qs(document, `.${NS}-filterbar [data-act="filter-compact"]`);
+    if (compactBtn) {
+      compactBtn.disabled = true;
+      compactBtn.textContent = 'Compacting…';
+    }
+    try {
+      const { matched, emptyRules } = await collectMatchItems({
+        ensureIndex,
+        progressEl: compactBtn,
+      });
+      if (emptyRules) {
+        exitCompactView();
+        filterState.active = false;
+        filterState.matchedIds = null;
+        filterState.matchCount = null;
+        viewDeps = null;
+        applyFilterToCurrentPage();
+        updateFilterBarLabels();
+        return;
+      }
+      filterState.matchedIds = new Set(matched.map((v) => String(v.videoId)));
+      filterState.matchCount = matched.length;
+      filterState.active = true;
+      stampViewDeps();
+      if (!matched.length) {
+        exitCompactView();
+        applyFilterToCurrentPage();
+        updateFilterBarLabels();
+        setFlash('Filter matched 0 videos');
+        return;
+      }
+      enterCompactView(matched);
+      wireCardClicks();
+      await refreshLookup();
+      await restoreSelectionToPage(parseCards());
+      applyFilterToCurrentPage();
+      updateFilterBarLabels();
+      updateToolbarLabels();
+      const pages = compactPageCount();
+      setFlash(
+        pages > 1
+          ? `Compact view · ${formatFavCount(matched.length)} matches · ${pages} pages`
+          : `Compact view · ${formatFavCount(matched.length)} matches`,
+      );
+    } catch (err) {
+      setError(`Compact failed: ${err.message || String(err)}`);
+    } finally {
+      filterRunning = false;
+      updateFilterBarLabels();
+    }
+  }
+
   /** Resolve current Match rules to a video list (does not change View / selection). */
-  async function collectMatchItems({ ensureIndex = true, progressEl = null } = {}) {
+  async function collectMatchItems({
+    ensureIndex = true,
+    progressEl = null,
+    /** When true, both dual-toggles on + no Duration still selects the full list index. */
+    allowUnfiltered = false,
+  } = {}) {
     // Lazy freshness: only refresh disk/index when this Match needs them and they are missing/dirty/drifted.
     if (progressEl && !diskFilterIsAll() && (!scanned || !localIdSet.size || diskIndexDirty)) {
       progressEl.textContent = 'Scanning…';
@@ -3449,7 +5437,7 @@
     const wantsDur = needsDur.minSec != null || needsDur.maxSec != null;
     const wantsDisk = !diskFilterIsAll();
     const wantsColl = !collectionFilterIsAll();
-    if (!wantsDur && !wantsDisk && !wantsColl) {
+    if (!wantsDur && !wantsDisk && !wantsColl && !allowUnfiltered) {
       return { matched: [], emptyRules: true };
     }
     if (ensureIndex) {
@@ -3481,6 +5469,7 @@
     if (filterRunning) return;
     filterRunning = true;
     setError('');
+    exitCompactView();
     const applyBtn =
       qs(document, `.${NS}-controls [data-act="filter-apply"]`) ||
       qs(document, `.${NS}-filterbar [data-act="filter-apply"]`);
@@ -3522,7 +5511,6 @@
     setError('');
     try {
       let matched = [];
-      let emptyRules = false;
       // Stale stores that this View depended on → drop View and re-collect.
       if (frozenViewStoresDirty()) {
         invalidateFrozenView();
@@ -3544,13 +5532,12 @@
           };
         });
       } else {
-        const result = await collectMatchItems({ ensureIndex: true });
+        // Default Match (both dual-toggles on, no Duration) = entire list index.
+        const result = await collectMatchItems({
+          ensureIndex: true,
+          allowUnfiltered: true,
+        });
         matched = result.matched;
-        emptyRules = result.emptyRules;
-      }
-      if (emptyRules) {
-        setError('Set Match rules first (or use This page / Page range)');
-        return;
       }
       if (!matched.length) {
         setError(
@@ -3584,6 +5571,7 @@
 
   /** Release filtered view without resetting Match rules. */
   async function showAllView() {
+    exitCompactView();
     filterState.active = false;
     filterState.matchedIds = null;
     filterState.matchCount = null;
@@ -3595,6 +5583,7 @@
 
   /** Reset Match rules and release the filtered view. */
   async function resetMatchRules() {
+    exitCompactView();
     filterState.active = false;
     filterState.matchedIds = null;
     filterState.matchCount = null;
@@ -3613,11 +5602,6 @@
     applyFilterToCurrentPage();
     updateFilterBarLabels();
     setError('');
-  }
-
-  /** @deprecated name kept for older call sites — clears visual filter only. */
-  async function clearLibraryFilterVisual() {
-    return showAllView();
   }
 
   async function selectPageRangeFromInputs() {
@@ -4813,20 +6797,41 @@
   }
 
   function setError(msg) {
+    if (statusFlashTimer) {
+      clearTimeout(statusFlashTimer);
+      statusFlashTimer = null;
+    }
     statusFlash = String(msg || '').trim();
     statusFlashIsError = !!statusFlash;
     paintStatus();
   }
 
-  /** Non-error status chip flash (success / info). Cleared by setError(''). */
+  /** Non-error status chip flash (success / info). Auto-clears so live queue status returns. */
   function setFlash(msg) {
+    if (statusFlashTimer) {
+      clearTimeout(statusFlashTimer);
+      statusFlashTimer = null;
+    }
     statusFlash = String(msg || '').trim();
     statusFlashIsError = false;
     paintStatus();
+    if (!statusFlash) return;
+    statusFlashTimer = setTimeout(() => {
+      statusFlashTimer = null;
+      if (statusFlashIsError || !statusFlash) return;
+      statusFlash = '';
+      paintStatus();
+    }, 2200);
   }
 
   function setMeta(_text) {
     // Status lives in the row-3 status chip (ensureStatusBar / paintStatus).
+  }
+
+  function hasLocalPathInfo(info) {
+    if (!info || info.exists === false) return false;
+    // Scan cache omits `exists`; relative/absolute/display path is enough.
+    return !!(info.exists || info.relativePath || info.absolutePath || info.displayPath);
   }
 
   function renderStatus(card, info, scannedState) {
@@ -4836,7 +6841,7 @@
     let box = qs(card.el, `.${NS}-status`) || (pick && qs(pick, `.${NS}-status`));
 
     // Only show a status line when the file exists on Mac (path only).
-    if (!scannedState || !(info && info.exists)) {
+    if (!scannedState || !hasLocalPathInfo(info)) {
       if (box) box.remove();
       return;
     }
@@ -4920,13 +6925,18 @@
     }
     try {
       const data = await send('HELPER_LOOKUP', { videoIds: cards.map((c) => c.videoId) });
-      lastMatches = data.results || {};
+      const results = data.results || {};
+      // Merge so Compact off-page cards keep scan paths when lookup is sparse.
+      lastMatches = { ...lastScanMatches, ...lastMatches, ...results };
       if (data.lastScan && data.lastScan.scannedAt) scanned = true;
       ignoreMutationsUntil = Date.now() + 400;
-      cards.forEach((card) => renderStatus(card, lastMatches[card.videoId], scanned));
+      cards.forEach((card) => {
+        const info = results[card.videoId] || lastMatches[card.videoId] || lastScanMatches[card.videoId];
+        renderStatus(card, info, scanned);
+      });
       if (scanned) {
         Object.entries(lastMatches).forEach(([id, info]) => {
-          if (info && info.exists) localIdSet.add(String(id));
+          if (hasLocalPathInfo(info)) localIdSet.add(String(id));
         });
         syncCurrentPageLocalMark(cards, lastMatches);
       } else {
@@ -4935,9 +6945,15 @@
       await applyOrdinalsToCards(cards);
       await refreshSelectionCount();
     } catch (err) {
-      cards.forEach((card) => {
-        if (!scanned) renderStatus(card, null, false);
-      });
+      // Compact still paints from scan cache when Helper lookup fails briefly.
+      if (scanned) {
+        cards.forEach((card) => {
+          const cached = lastMatches[card.videoId] || lastScanMatches[card.videoId];
+          if (hasLocalPathInfo(cached)) renderStatus(card, { ...cached, exists: true }, true);
+        });
+      } else {
+        cards.forEach((card) => renderStatus(card, null, false));
+      }
       setError(`Helper unavailable: ${err.message}`);
     }
   }
@@ -5034,8 +7050,15 @@
     const pick = qs(card.el, `.${NS}-pick`);
     const link = card.link;
     if (!pick || !link) return;
-    const title = qs(link, '.thumb_title');
-    const info = qs(link, '.thumb_info');
+    // Title/meta may live under the link or as card siblings after prior moves.
+    const title =
+      qs(link, '.thumb_title') ||
+      qs(card.el, `.${NS}-pick .thumb_title`) ||
+      qs(card.el, '.thumb_title');
+    const info =
+      qs(link, '.thumb_info') ||
+      qs(card.el, `.${NS}-pick .thumb_info`) ||
+      qs(card.el, '.thumb_info');
     if (title && title.parentElement !== pick) pick.appendChild(title);
     if (info && info.parentElement !== pick) pick.appendChild(info);
     const status = qs(card.el, `.${NS}-status`) || qs(pick, `.${NS}-status`);
@@ -5120,14 +7143,41 @@
   /** True after we replace list/pagination HTML (site page handlers are dead). */
   let extensionOwnsPagination = false;
 
+  /** Thumb hover previews — never treat these as the Fancybox online player. */
+  function isCompactPreviewVideo(video) {
+    if (!video) return false;
+    if (video.classList?.contains(`${NS}-compact-preview`)) return true;
+    // Native/site trailers also live under .item.thumb; real player is in the popup.
+    if (video.closest?.('.item.thumb, .hxyrule-compact-thumbs')) return true;
+    return false;
+  }
+
+  function stopAllCompactPreviews() {
+    qsa(document, `video.${NS}-compact-preview`).forEach((node) => {
+      try {
+        node.pause();
+      } catch (_) {
+        /* ignore */
+      }
+      node.remove();
+    });
+  }
+
   function visibleOnlineVideo() {
-    return qsa(document, 'video').find((video) => {
-      return isOnlineVideoVisible(video);
-    }) || null;
+    const videos = qsa(document, 'video').filter((video) => isOnlineVideoVisible(video));
+    if (!videos.length) return null;
+    // Prefer the Fancybox/popup player when both a leftover thumb and popup exist.
+    const inPopup = videos.find((video) =>
+      video.closest(
+        '.fancybox-wrap, .fancybox-container, .fancybox-inner, .mfp-wrap, .mfp-content, .popup-holder, .js-popup',
+      ),
+    );
+    return inPopup || videos[0];
   }
 
   function isOnlineVideoVisible(video) {
     if (!video?.isConnected) return false;
+    if (isCompactPreviewVideo(video)) return false;
     const rect = video.getBoundingClientRect();
     const style = getComputedStyle(video);
     return (
@@ -5524,6 +7574,9 @@
     if (onlinePlaybackSession) {
       finishOnlineFullscreen(onlinePlaybackSession, { keepFullscreen: true });
     }
+    // Compact hover leaves a playing <video> on the thumb; without removing it,
+    // attach() fullscreened that preview mp4 instead of the Fancybox player.
+    stopAllCompactPreviews();
 
     const session = {
       startedAt: Date.now(),
@@ -5739,6 +7792,11 @@
         return;
       }
 
+      // Fancybox is already gone — drop the click-shield / toolbar hide now so
+      // favorites is not left dimmed or chrome-less for the disconnect grace.
+      removeOnlineBlocker();
+      document.documentElement.classList.remove(`${NS}-online-playing`);
+
       // Popup dismissed before the player mounted (common with immediate Esc /
       // Cmd+click when the native popup fails to open).
       if (!session.seenVideo) {
@@ -5925,7 +7983,8 @@
       const matches = result.matches || {};
       localIdSet = new Set(Object.keys(matches).map(String));
       lastScanMatches = matches;
-      lastMatches = matches;
+      // Keep full scan map; page lookup only overlays the visible cards.
+      lastMatches = { ...matches };
       scanFavTotal = detectFavoritesTotal();
       scanMatched = Number(result.matchedCount || 0);
       // Restore stable label before nearby page checks (no per-page flicker).
@@ -5937,16 +7996,21 @@
         renderStatus(card, m ? { ...m, exists: true } : { exists: false }, true);
       });
       const lookup = await send('HELPER_LOOKUP', { videoIds: cards.map((c) => c.videoId) });
-      lastMatches = lookup.results || {};
+      lastMatches = { ...lastScanMatches, ...lastMatches, ...(lookup.results || {}) };
       cards.forEach((card) => renderStatus(card, lastMatches[card.videoId], true));
       syncCurrentPageLocalMark(cards, lastMatches);
       await applyOrdinalsToCards(cards);
       await evaluateVisibleLocalPages(localIdSet);
       // Match chips only edit rules. Re-apply after scan only when View already
-      // has an active filtered result (Show matches), never just because chips changed.
-      // Skip while applyLibraryFilter is already running (collectMatchItems may scan).
+      // has an active filtered result, never just because chips changed.
+      // Skip while a View apply is already running (collectMatchItems may scan).
+      // Keep Compact if that is the active View — do not bounce to Show matches.
       if (filterState.active && !filterRunning) {
-        await applyLibraryFilter({ ensureIndex: false });
+        if (compactViewActive) {
+          await applyCompactMatchesView({ ensureIndex: false });
+        } else {
+          await applyLibraryFilter({ ensureIndex: false });
+        }
       }
     } catch (err) {
       setError(`Scan failed: ${err.message}`);
@@ -6357,106 +8421,45 @@
   }
 
   async function doRebuildOrdinals() {
-    if (rebuildRunning) return;
     // One global ordinals table: only Favorites order may replace it.
     if (!isFavoritesPage()) {
       setError('Renumber is only available on Favorites (global sequence).');
       return;
     }
-    const maxPage = maxPageNumber();
-    const est = detectFavoritesTotal();
-    const ok = await confirmModal({
-      title: 'Renumber favorites?',
-      okLabel: 'Renumber',
-      cancelLabel: 'Cancel',
-      body: [
-        `Crawl pages 1–${maxPage}` + (est ? ` (~${est} videos)` : '') + '.',
-        'Oldest favorite (last page, last card) becomes 1.',
-        'This replaces the global sequence used everywhere (Jump, filenames).',
-        'Local files are renamed to match list-page titles. Nothing is deleted.',
-        'Wrong old numbers and abbreviated names are replaced. Slow (one request per page).',
-      ].join('\n'),
-    });
-    if (!ok) return;
-
-    rebuildRunning = true;
-    setError('');
-    const btn =
-      qs(document, `.${NS}-controls [data-act="rebuild-ordinals"]`) ||
-      qs(document, `.${NS}-toolbar [data-act="rebuild-ordinals"]`);
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = `Renumber (0/${maxPage})`;
-    }
-
-    const ordered = []; // newest-first
-    const titles = {}; // videoId -> bare list-page title
     try {
+      let st = await send('RENUMBER_JOB_STATUS');
+      if (st?.status === 'running' || st?.status === 'stopping') {
+        rebuildRunning = true;
+        applyRenumberJobProgress(st);
+        updateToolbarLabels();
+        startRenumberStatusPoll();
+        await waitForRenumberJob();
+        return;
+      }
+      const maxPage = maxPageNumber();
+      setError('');
       await send('HELPER_HEALTH');
-      for (let page = 1; page <= maxPage; page += 1) {
-        if (btn) btn.textContent = `Renumber (${page - 1}/${maxPage})`;
-        const data = await fetchListPage(page);
-        const batch = data.items || [];
-        if (page === 1 && batch.length) {
-          stablePerPage = batch.length;
-        }
-        batch.forEach((it) => {
-          const id = String(it.videoId || '');
-          if (!id) return;
-          ordered.push(id);
-          const bare = bareTitle(it.title || '');
-          if (bare && bare !== id) titles[id] = bare;
-        });
-        if (btn) btn.textContent = `Renumber (${page}/${maxPage})`;
-        if (page < maxPage) {
-          await new Promise((r) => setTimeout(r, 700));
-        }
+      st = await send('RENUMBER_JOB_START', { maxPage });
+      rebuildRunning = true;
+      applyRenumberJobProgress(st);
+      updateToolbarLabels();
+      startRenumberStatusPoll();
+      const finalSt = await waitForRenumberJob();
+      stopRenumberPoll();
+      if (finalSt?.status === 'error') {
+        throw new Error(finalSt.error || 'renumber failed');
       }
-      if (!ordered.length) {
-        throw new Error('crawled 0 videos — check login / page parse');
-      }
-      scanFavTotal = ordered.length;
-      if (btn) btn.textContent = 'Renumber (renaming…)';
-      const result = await send('HELPER_ORDINALS_REBUILD', {
-        videoIds: ordered,
-        titles,
-        renameFiles: true,
-      });
-      const renamed = (result.rename && result.rename.renamed) || 0;
-      const errCount = (result.rename && result.rename.errorCount) || 0;
-      const total = result.count || ordered.length;
-      lastRenumberStats = { done: maxPage, total: maxPage };
-      try {
-        const scan = await send('HELPER_SCAN');
-        scanned = true;
-        const matches = scan.matches || {};
-        localIdSet = new Set(Object.keys(matches).map(String));
-        lastMatches = matches;
-        scanMatched = Number(scan.matchedCount || 0);
-      } catch (_) {
-        /* rename already applied; scan optional */
-      }
-      const cards = parseCards();
-      await applyOrdinalsToCards(cards);
-      cards.forEach((card) => renderStatus(card, lastMatches[card.videoId], scanned));
-      syncCurrentPageLocalMark(cards, lastMatches);
-      scheduleEvaluateVisiblePages();
-      const msg =
-        `Renumbered ${total}` +
-        (renamed ? `, renamed ${renamed} file(s)` : ', no files needed rename') +
-        (errCount ? ` (${errCount} rename error(s))` : '') +
-        '.';
-      if (errCount) setError(msg);
-      else setError('');
-      if (btn) {
-        btn.textContent = `Renumber (${maxPage}/${maxPage})`;
-        await new Promise((r) => setTimeout(r, 1200));
+      if (finalSt?.status === 'stopped') {
+        lastRenumberStats = null;
       }
     } catch (err) {
       setError(`Renumber failed: ${err.message || String(err)}`);
     } finally {
       rebuildRunning = false;
+      renumberProgressLabel = '';
+      stopRenumberPoll();
       updateToolbarLabels();
+      resumeRenumberJobUiIfNeeded().catch(() => {});
     }
   }
 
@@ -6514,20 +8517,9 @@
       sortKey: -(Number(it.favoritePage) * 100000 + Number(it.cardIndex)),
     }));
     try {
-      const before = await send('QUEUE_STATUS');
       const result = await send('QUEUE_ENQUEUE', { items: payload });
       const added = Number(result.added || 0);
-      const sessionTotal = added > 0 ? added : payload.length;
-      dlSession = {
-        active: sessionTotal > 0,
-        total: sessionTotal,
-        baselineCompleted: Number(before.completed || 0),
-      };
-      if (dlSession.active) {
-        // (a/b) = completed / session total.
-        stopLabelCached = `0/${dlSession.total}`;
-        updateToolbarLabels();
-      }
+      if (added > 0) applyDownloadProgress(result);
       // Keep selection checked so user can re-queue leftovers or act on the same set.
       await refreshSelectionCount(itemsMap);
       // Merge Helper exists for this selection so Local filter tracks skips/imports.
@@ -6552,9 +8544,11 @@
       await refreshQueue();
       await send('START_QUEUE_WORKER');
       if (!added && (result.skippedExisting || result.skippedQueued)) {
-        dlSession = { active: false, total: 0, baselineCompleted: 0 };
-        stopLabelCached = 'idle';
-        updateToolbarLabels();
+        // Do not clear an in-flight session just because this click added nothing.
+        if (!dlSession.active) {
+          downloadProgressLabel = 'idle';
+          updateToolbarLabels();
+        }
         setError(
           `Nothing queued (already local: ${result.skippedExisting || 0}, already queued: ${result.skippedQueued || 0})`,
         );
@@ -6600,35 +8594,44 @@
     }
   }
 
+  function applyDownloadProgress(st) {
+    if (!st || typeof st !== 'object') return;
+    if (st.downloadSession && typeof st.downloadSession === 'object') {
+      dlSession = {
+        active: !!st.downloadSession.active,
+        total: Math.max(0, Number(st.downloadSession.total) || 0),
+        baselineCompleted: Math.max(0, Number(st.downloadSession.baselineCompleted) || 0),
+      };
+    }
+    const active = Number(st.activeCount || 0);
+    const progress = String(st.downloadProgress || '').trim();
+    if (progress && progress !== 'idle') {
+      downloadProgressLabel = progress;
+    } else if (active > 0) {
+      // Legacy SW without downloadProgress: exclude cancelled rows.
+      const completed = Number(st.completed || 0);
+      const cancelled = Number(st.cancelled || 0);
+      const totalRows = Number(st.total || 0);
+      const denom = Math.max(1, totalRows > 0 ? totalRows - cancelled : active + completed);
+      downloadProgressLabel = `${Math.max(0, Math.min(completed, denom))}/${denom}`;
+    } else {
+      downloadProgressLabel = 'idle';
+      dlSession = { active: false, total: 0, baselineCompleted: 0 };
+    }
+    updateToolbarLabels();
+    if (downloadProgressLabel && downloadProgressLabel !== 'idle') {
+      setLiveStatus(`Downloading (${downloadProgressLabel})`);
+    } else if (active > 0) {
+      setLiveStatus(`Queue active · ${active}`);
+    } else {
+      setLiveStatus('Ready');
+    }
+  }
+
   async function refreshQueue() {
     try {
       const st = await send('QUEUE_STATUS');
-      const active = Number(st.activeCount || 0);
-      const completed = Number(st.completed || 0);
-      if (dlSession.active) {
-        const done = Math.max(0, Math.min(dlSession.total, completed - dlSession.baselineCompleted));
-        if (active > 0) {
-          // (a/b) = completed count / session total.
-          stopLabelCached = `${done}/${dlSession.total}`;
-        } else {
-          dlSession = { active: false, total: 0, baselineCompleted: 0 };
-          stopLabelCached = 'idle';
-        }
-      } else if (active > 0) {
-        const total = Math.max(1, Number(st.total || 0) || completed || 1);
-        const done = Math.max(0, Math.min(completed, total));
-        stopLabelCached = `${done}/${total}`;
-      } else {
-        stopLabelCached = 'idle';
-      }
-      updateToolbarLabels();
-      if (stopLabelCached && stopLabelCached !== 'idle') {
-        setLiveStatus(`Downloading (${stopLabelCached})`);
-      } else if (active > 0) {
-        setLiveStatus(`Queue active · ${active}`);
-      } else {
-        setLiveStatus('Ready');
-      }
+      applyDownloadProgress(st);
       const failed = (st.items || []).find(
         (x) => x.status === 'failed' && x.error && !/cancelled|interrupted/i.test(x.error),
       );
@@ -6652,7 +8655,7 @@
       await healQueueAtLowWater(st);
       await refreshSelectionCount();
     } catch (err) {
-      stopLabelCached = 'idle';
+      downloadProgressLabel = 'idle';
       updateToolbarLabels();
       setLiveStatus('Helper offline');
     }
@@ -6671,10 +8674,8 @@
   async function doStopDownloads() {
     setError('');
     try {
-      await send('QUEUE_STOP');
-      dlSession = { active: false, total: 0, baselineCompleted: 0 };
-      stopLabelCached = 'idle';
-      updateToolbarLabels();
+      const st = await send('QUEUE_STOP');
+      applyDownloadProgress(st || { activeCount: 0, downloadProgress: 'idle' });
       await refreshQueue();
     } catch (err) {
       setError(`Stop failed: ${err.message}`);
@@ -6705,50 +8706,105 @@
   }
 
   async function collectPages(start, end) {
+    if (selCollectRunning) {
+      setError('Page range already running — click Clear to stop it first.');
+      return;
+    }
     setError('');
-    const sel = await send('SELECTION_GET');
-    const items = { ...(sel.items || {}) };
-    const pageCount = Math.max(1, end - start + 1);
-    let fetched = 0;
-    // (a/b) = ath page among b pages in the range (1-based).
-    selProgress = { current: 1, total: pageCount };
-    updateToolbarLabels();
-    for (let page = start; page <= end; page += 1) {
-      const pageIndex = page - start + 1;
-      selProgress = { current: pageIndex, total: pageCount };
-      updateToolbarLabels();
-      try {
-        const data = await fetchListPage(page);
-        const batch = data.items || [];
-        fetched += batch.length;
-        if (page === start && batch.length > 0) {
-          stablePerPage = Math.max(stablePerPage || 0, batch.length);
-        }
-        batch.forEach((it) => {
-          items[it.videoId] = it;
-        });
-      } catch (err) {
-        setError(`Select pages paused: ${err.message}`);
-        await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
-        await restoreSelectionToPage(parseCards());
+    selCollectRunning = true;
+    selCollectCancel = false;
+    try {
+      const sel = await send('SELECTION_GET');
+      if (selCollectCancel) {
         selProgress = null;
-        await refreshSelectionCount(items);
+        updateToolbarLabels();
         return;
       }
-      // Persist incrementally so selection survives if the tab is interrupted.
+      const items = { ...(sel.items || {}) };
+      const pageCount = Math.max(1, end - start + 1);
+      const perPage = Math.max(1, cardsPerPageEstimate());
+      let expectedTotal = pageCount * perPage;
+      let fetched = 0;
+      const baseCount = Object.keys(items).length;
+      selCountCached = baseCount;
+      // N + (a/b) = selection before range · videos fetched so far / expected in range.
+      selProgress = { base: baseCount, fetched: 0, total: expectedTotal };
+      updateToolbarLabels();
+      for (let page = start; page <= end; page += 1) {
+        if (selCollectCancel) break;
+        try {
+          const data = await fetchListPage(page);
+          if (selCollectCancel) break;
+          const batch = data.items || [];
+          fetched += batch.length;
+          if (page === start && batch.length > 0) {
+            stablePerPage = Math.max(stablePerPage || 0, batch.length);
+            expectedTotal = pageCount * Math.max(stablePerPage, batch.length);
+          }
+          batch.forEach((it) => {
+            items[it.videoId] = it;
+          });
+        } catch (err) {
+          if (selCollectCancel) break;
+          setError(`Select pages paused: ${err.message}`);
+          await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
+          await restoreSelectionToPage(parseCards());
+          selProgress = null;
+          await refreshSelectionCount(items);
+          return;
+        }
+        if (selCollectCancel) break;
+        selCountCached = Object.keys(items).length;
+        selProgress = { base: baseCount, fetched, total: expectedTotal };
+        updateToolbarLabels();
+        // Persist incrementally so selection survives if the tab is interrupted.
+        await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
+        // Clear may have raced during SET; wipe again so the loop cannot resurrect picks.
+        if (selCollectCancel) {
+          await send('SELECTION_CLEAR');
+          clearAllNativeSelectionOnPage();
+          break;
+        }
+        await restoreSelectionToPage(parseCards());
+        if (selCollectCancel) {
+          clearAllNativeSelectionOnPage();
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      if (selCollectCancel) {
+        selProgress = null;
+        selCountCached = 0;
+        updateToolbarLabels();
+        await refreshSelectionCount({});
+        return;
+      }
+      const n = Object.keys(items).length;
+      selProgress = null;
       await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
+      if (selCollectCancel) {
+        await send('SELECTION_CLEAR');
+        clearAllNativeSelectionOnPage();
+        selCountCached = 0;
+        updateToolbarLabels();
+        await refreshSelectionCount({});
+        return;
+      }
       await restoreSelectionToPage(parseCards());
-      await new Promise((r) => setTimeout(r, 800));
-    }
-    const n = Object.keys(items).length;
-    selProgress = null;
-    await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
-    await restoreSelectionToPage(parseCards());
-    await refreshSelectionCount(items);
-    if (!n) {
-      setError('Select pages found 0 videos. Reload the extension and retry; login or site AJAX params may have changed.');
-    } else if (fetched === 0) {
-      setError('Select pages request succeeded but parsed 0 videos.');
+      await refreshSelectionCount(items);
+      if (!n) {
+        setError(
+          'Select pages found 0 videos. Reload the extension and retry; login or site AJAX params may have changed.',
+        );
+      } else if (fetched === 0) {
+        setError('Select pages request succeeded but parsed 0 videos.');
+      }
+    } finally {
+      selCollectRunning = false;
+      if (selCollectCancel) {
+        selProgress = null;
+        updateToolbarLabels();
+      }
     }
   }
 
@@ -7029,12 +9085,18 @@
         onMatchRuleEdited();
       } else if (act === 'filter-apply') {
         await applyLibraryFilter({ ensureIndex: true });
+      } else if (act === 'filter-compact') {
+        await applyCompactMatchesView({ ensureIndex: true });
       } else if (act === 'filter-show-all') {
         await showAllView();
       } else if (act === 'filter-reset') {
         await resetMatchRules();
       } else if (act === 'index-build') {
         await buildFavIndex({ force: true });
+      } else if (act === 'index-stop') {
+        await doStopIndexJob();
+      } else if (act === 'renumber-stop') {
+        await doStopRenumberJob();
       } else if (act === 'playlist-add') {
         await doAddToPlaylist();
       } else if (act === 'scan') {
@@ -7050,16 +9112,23 @@
       } else if (act === 'rebuild-ordinals') {
         await doRebuildOrdinals();
       } else if (act === 'clear') {
+        // Abort in-flight Page range before wiping store (loop checks this flag).
+        selCollectCancel = true;
+        selProgress = null;
         await send('SELECTION_CLEAR');
         ignoreMutationsUntil = Date.now() + 800;
         clearAllNativeSelectionOnPage();
         setError('');
+        selCountCached = 0;
+        updateToolbarLabels();
         await refreshSelectionCount({});
         await refreshQueue();
       } else if (act === 'stop') {
         await doStopDownloads();
       } else if (act === 'wake-queue') {
         await doWakeQueue();
+      } else if (act === 'open-tasks') {
+        openTaskQueueDialog();
       } else if (act === 'delete-favs') {
         await doDeleteSelected();
       } else if (act === 'prune-local') {
@@ -7114,6 +9183,14 @@
   let pageWatchTimer = null;
 
   function listRoot() {
+    if (compactViewActive) {
+      return (
+        qs(document, `.${NS}-compact-thumbs`) ||
+        favoritesListEl() ||
+        qs(document, '#list_videos_my_favourite_videos_items') ||
+        qs(document, '.thumbs')
+      );
+    }
     return (
       favoritesListEl() ||
       qs(document, '#list_videos_my_favourite_videos_items') ||
@@ -7220,19 +9297,26 @@
   function startPageWatch() {
     if (pageWatchTimer) return;
     pageFinger = pageFingerprint();
-    let pathFinger = `${location.pathname}|${indexScopeKey()}`;
+    let pathFinger = `${activeLibraryPathname()}|${indexScopeKey()}`;
     pageWatchTimer = setInterval(() => {
       ensureToolbar();
       if (Date.now() < ignoreMutationsUntil) return;
+      // Online play temporarily pushStates to /video/{id}/ — do not treat as navigation.
+      if (document.documentElement.classList.contains(`${NS}-online-playing`)) {
+        if (compactViewActive) ensureCompactPagerMounted();
+        return;
+      }
       if (isPlaylistDetailPage()) {
         const list = favoritesListEl();
         if (list) moveLargeNativePanelBelowCards(list);
       }
-      const pathNext = `${location.pathname}|${indexScopeKey()}`;
+      if (compactViewActive) ensureCompactPagerMounted();
+      const pathNext = `${activeLibraryPathname()}|${indexScopeKey()}`;
       if (pathNext !== pathFinger) {
         pathFinger = pathNext;
         clearSelectionIfLibraryChanged()
           .then(() => onListChanged({ force: true, light: true }))
+          .then(() => resumeBackgroundJobsUi())
           .catch(() => {});
         return;
       }
@@ -7272,6 +9356,8 @@
     ignoreMutationsUntil = Date.now() + 500;
     parseCards().forEach((card) => renderStatus(card, null, false));
     wireCardClicks();
+    // Reattach Index/Renumber progress before Scan so refresh keeps grey+(a/b).
+    await resumeBackgroundJobsUi();
     // Refresh the disk index once on every full page load. Pagination/AJAX
     // changes continue to use refreshLookup() so they do not rescan the root.
     await doScan();
@@ -7279,6 +9365,7 @@
     applyFilterToCurrentPage();
     await refreshQueue();
     await refreshSelectionCount();
+    await resumeBackgroundJobsUi();
     ensureJumpBar();
     layoutTopControls();
     pageFinger = pageFingerprint();
@@ -7286,6 +9373,8 @@
     setInterval(() => {
       refreshQueue().catch(() => {});
       refreshSelectionCount().catch(() => {});
+      refreshIndexJobUi().catch(() => {});
+      refreshRenumberJobUi().catch(() => {});
     }, 4000);
   }
 
@@ -7324,6 +9413,8 @@
       renderStatus(card, null, false);
     });
     wireCardClicks();
+    // Reattach Index/Renumber progress before Scan so refresh keeps grey+(a/b).
+    await resumeBackgroundJobsUi();
     // Refresh the disk index once on every full page load. Pagination/AJAX
     // changes continue to use refreshLookup() so they do not rescan the root.
     await doScan();
@@ -7331,12 +9422,15 @@
     applyFilterToCurrentPage();
     await refreshQueue().catch(() => {});
     await refreshSelectionCount();
+    await resumeBackgroundJobsUi();
     layoutTopControls();
     pageFinger = pageFingerprint();
 
     setInterval(() => {
       refreshQueue().catch(() => {});
       refreshSelectionCount().catch(() => {});
+      refreshIndexJobUi().catch(() => {});
+      refreshRenumberJobUi().catch(() => {});
     }, 4000);
   }
 
