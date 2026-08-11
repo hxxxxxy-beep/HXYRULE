@@ -210,6 +210,35 @@ html:-webkit-full-screen .hxyrule-online-player .hxyrule-fs-exit:not([hidden]),
 }
 
 /*
+ * Favorites + playlist library pages: drop the native Artists / Tags /
+ * Categories / Temp Blacklist / Search row. Keep nodes in the DOM so header
+ * relocation can still match `.container > .columns`. Scoped via
+ * data-hxyrule-library (set at document_start on library paths) so site-wide
+ * search pages keep their filters.
+ */
+html[data-hxyrule-library="1"] .columns:has(#model_filter),
+html[data-hxyrule-library="1"] .columns:has(#tags_filter),
+html[data-hxyrule-library="1"] .columns:has(#categories_filter),
+html[data-hxyrule-library="1"] .columns:has(#temp_blacklist_filter),
+html[data-hxyrule-library="1"] .header .container:has(#model_filter),
+html[data-hxyrule-library="1"] #model_filter,
+html[data-hxyrule-library="1"] #tags_filter,
+html[data-hxyrule-library="1"] #categories_filter,
+html[data-hxyrule-library="1"] #temp_blacklist_filter,
+html[data-hxyrule-library="1"] #search_button_large_container {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  max-height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: none !important;
+  pointer-events: none !important;
+}
+
+/*
  * Hide native circle checkboxes immediately on favorites (before JS runs),
  * so refresh / AJAX page changes do not flash the old control.
  */
@@ -233,10 +262,58 @@ body:has(#list_videos_my_favourite_videos) .item.thumb input[name="delete[]"] {
   left: -9999px !important;
 }
 
-/* Compact equal gaps between toolbar rows (Match → Sync → Jump). */
+/*
+ * Per-card native Order / Delete strip under thumbs (playlist_order_field).
+ * HXYRULE selects via the pick rail; this row only separates cards vertically.
+ * Scoped to library pages (Favorites + /my/playlists/{id}/) so the My Playlists
+ * index keeps native Edit / Delete / select (.item-control.headline_panel).
+ */
+html[data-hxyrule-library="1"] .item.thumb .item-control,
+html[data-hxyrule-library="1"] .item.thumb .item-control.headline_panel,
+html[data-hxyrule-library="1"] .item.thumb .playlist_manage_controls,
+html[data-hxyrule-library="1"] .item.thumb .playlist_order_field,
+html[data-hxyrule-library="1"] .thumbs .item-control.headline_panel,
+html[data-hxyrule-library="1"] #list_videos_my_favourite_videos .item-control,
+html[data-hxyrule-library="1"] #list_videos_my_favourite_videos_items .item-control,
+html[data-hxyrule-library="1"] [id^="list_videos"] .item-control.headline_panel,
+html[data-hxyrule-library="1"] [id^="list_videos"] .playlist_manage_controls,
+html[data-hxyrule-library="1"] [id^="list_videos"] .playlist_order_field {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  max-height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: none !important;
+  pointer-events: none !important;
+}
+
+/* Toolbar rails — command / match / view / select / nav. */
 :root {
-  --hxyrule-row-gap: 4px;
-  --hxyrule-step-height: 30px;
+  --hxyrule-row-gap: 0;
+  --hxyrule-step-height: 44px;
+  --hxyrule-fixed-toolbar-height: 268px;
+  --hxyrule-text: #e8ecf1;
+  --hxyrule-muted: #8b95a3;
+  --hxyrule-surface: #1e2830;
+  --hxyrule-rail-line: #2c3640;
+  --hxyrule-control: #2f3b46;
+  --hxyrule-control-hover: #3d4b58;
+  --hxyrule-accent: #3f7ea8;
+  --hxyrule-accent-hover: #4d94c2;
+  --hxyrule-primary: #3f9a6f;
+  --hxyrule-primary-hover: #4eb082;
+  --hxyrule-danger: #ce5f5d;
+  --hxyrule-danger-hover: #e08886;
+  --hxyrule-chip-on: #ce5f5d;
+  --hxyrule-ctrl-h: 44px;
+  --hxyrule-radius: 8px;
+  --hxyrule-radius-sm: 6px;
+  --hxyrule-font: 14px;
+  --hxyrule-font-label: 13px;
+  --hxyrule-font-rail: 12px;
 }
 
 /* Favorites box: cards flush to top; no fat bottom gap */
@@ -277,12 +354,13 @@ body:has(.hxyrule-topstack) .container {
   margin-bottom: 0 !important;
 }
 
+/* Footer / ad chrome only — never `.spots` / `.columns_spots` alone.
+ * On this skin those classes can wrap the main column; hiding them wiped
+ * the entire card grid while the fixed toolbar still looked fine. */
 body:has(.hxyrule-topstack) .footer,
 body:has(.hxyrule-topstack) .page__footer,
 body:has(.hxyrule-topstack) .footer_spots,
-body:has(.hxyrule-topstack) .footer_holder,
-body:has(.hxyrule-topstack) .columns_spots,
-body:has(.hxyrule-topstack) .spots {
+body:has(.hxyrule-topstack) .footer_holder {
   display: none !important;
   height: 0 !important;
   min-height: 0 !important;
@@ -326,22 +404,22 @@ body:has(.hxyrule-topstack) #list_videos_my_favourite_videos ~ .holder-bottom {
   visibility: hidden;
 }
 
-/* Native page title — kept for favorites; playlist uses inline+class nuke */
-.hxyrule-hide-native-headline {
+/* Native page title — never hide a headline that still wraps the card grid. */
+.hxyrule-hide-native-headline:not(:has(.item.thumb)):not(:has(.thumbs)):not(:has([id$="_items"])):not(:has(.hxyrule-compact-thumbs)) {
   display: none !important;
 }
 
-/* Fixed top toolbar: Match/View/Select → Sync/Queue/Index/Edit → Jump/Pages/status */
+/* Fixed top toolbar: Command → Match → View → Select → Nav */
 .hxyrule-topstack {
   display: flex !important;
   flex-direction: column !important;
-  align-items: center !important;
+  align-items: stretch !important;
   justify-content: flex-start !important;
-  gap: var(--hxyrule-row-gap, 4px) !important;
+  gap: 0 !important;
   clear: both !important;
   width: 100% !important;
   margin: 0 !important;
-  padding: 4px 0 !important;
+  padding: 0 !important;
   box-sizing: border-box !important;
   float: none !important;
   position: relative !important;
@@ -361,12 +439,12 @@ body:has(.hxyrule-topstack) #list_videos_my_favourite_videos ~ .holder-bottom {
   /* Row overflow scrolls inside .hxyrule-pipeline (no topstack scrollbar). */
   overflow-x: hidden !important;
   overflow-y: auto !important;
-  padding: calc(4px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
-    4px max(8px, env(safe-area-inset-left)) !important;
-  background: rgba(33, 43, 49, 0.97) !important;
+  padding: env(safe-area-inset-top) 0 0 !important;
+  background:
+    linear-gradient(180deg, #26313a 0%, var(--hxyrule-surface, #1e2830) 100%) !important;
   border-top: none !important;
-  border-bottom: 1px solid #424c55 !important;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34) !important;
+  border-bottom: 1px solid #3a4652 !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32) !important;
   box-sizing: border-box !important;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -380,7 +458,7 @@ body:has(.hxyrule-topstack) #list_videos_my_favourite_videos ~ .holder-bottom {
 
 /* Reserve live toolbar height + 3px card gap so cards never sit under it. */
 body:has(.hxyrule-topstack) {
-  padding-top: var(--hxyrule-fixed-toolbar-height, 128px) !important;
+  padding-top: var(--hxyrule-fixed-toolbar-height, 268px) !important;
   padding-bottom: 0 !important;
   box-sizing: border-box !important;
 }
@@ -411,51 +489,198 @@ body > .header[data-hxyrule-dark-panel-page="playlist"] {
 
 /* Playlist toolbar: title + same compact row gaps as Favorites */
 .hxyrule-topstack--playlist {
-  gap: var(--hxyrule-row-gap, 4px) !important;
+  gap: 0 !important;
   margin: 0 !important;
-  padding: calc(4px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
-    4px max(8px, env(safe-area-inset-left)) !important;
+  padding: env(safe-area-inset-top) 0 0 !important;
 }
 
 /*
- * Native "My Playlist NAME (n)" stays in page flow — keep links clickable and
- * collapse the empty box height the site puts under the text.
+ * Title chrome row above Command:
+ * - Left: brand count chip (My Favorites (N) / NAME (id) : N videos)
+ * - Center (playlist only): NAME
+ * - Right: Libraries switcher
  */
 .hxyrule-topstack--playlist > .hxyrule-playlist-native-title,
-.hxyrule-playlist-native-title {
-  display: block !important;
+.hxyrule-playlist-native-title,
+.hxyrule-topstack > .hxyrule-favorites-lib-row,
+.hxyrule-favorites-lib-row {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0 !important;
+  position: relative !important;
   visibility: visible !important;
-  align-self: flex-start !important;
+  align-self: stretch !important;
   width: 100% !important;
-  margin: 0 0 1px !important; /* title → Select = 1px */
-  padding: 0 !important;
-  min-height: 0 !important;
-  height: auto !important;
+  margin: 0 !important;
+  padding: 8px 16px !important;
+  min-height: calc(var(--hxyrule-ctrl-h, 44px) + 16px) !important;
+  height: fit-content !important;
   max-height: none !important;
-  line-height: 1.25 !important;
-  overflow: visible !important;
-  font-size: inherit !important;
+  line-height: 0 !important;
+  overflow: hidden !important;
+  color: #fff !important;
+  font-size: var(--hxyrule-font, 14px) !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.02em !important;
   border: none !important;
+  border-bottom: 1px solid #4a5563 !important;
+  box-shadow: 0 1px 0 rgb(0 0 0 / 35%) !important;
+  background: rgb(255 255 255 / 2.5%) !important;
   box-sizing: border-box !important;
 }
 
-.hxyrule-topstack--playlist > .hxyrule-playlist-native-title .title,
-.hxyrule-topstack--playlist > .hxyrule-playlist-native-title h1,
-.hxyrule-topstack--playlist > .hxyrule-playlist-native-title h2,
-.hxyrule-topstack--playlist > .hxyrule-playlist-native-title a {
-  display: inline !important;
-  visibility: visible !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  line-height: 1.25 !important;
-  min-height: 0 !important;
-  height: auto !important;
+.hxyrule-playlist-native-title {
+  cursor: default !important;
 }
 
-/* Duplicates left above cards / outside stack */
-.headline.hxyrule-hide-native-headline,
-div.headline.hxyrule-hide-native-headline,
-.hxyrule-fav-box .headline.hxyrule-hide-native-headline {
+.hxyrule-favorites-lib-row {
+  cursor: default !important;
+  justify-content: flex-end !important;
+}
+
+/* Site clearfix / spacer nodes inside .headline — keep title + brand + Libraries. */
+.hxyrule-playlist-native-title > *:not(.hxyrule-playlist-title-label):not(.hxyrule-playlist-lib-btn):not(.hxyrule-favcount) {
+  display: none !important;
+  height: 0 !important;
+  max-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  visibility: hidden !important;
+}
+
+.hxyrule-playlist-native-title::before,
+.hxyrule-playlist-native-title::after {
+  content: none !important;
+  display: none !important;
+  height: 0 !important;
+  width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  clear: none !important;
+}
+
+/* Brand-style pills — title / Libraries / brand share the same control height. */
+.hxyrule-playlist-native-title .hxyrule-playlist-title-label,
+.hxyrule-playlist-native-title .hxyrule-playlist-lib-btn,
+.hxyrule-favorites-lib-row .hxyrule-playlist-lib-btn,
+.hxyrule-playlist-native-title .hxyrule-favcount,
+.hxyrule-favorites-lib-row .hxyrule-favcount {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  visibility: visible !important;
+  flex: 0 0 auto !important;
+  margin: 0 !important;
+  padding: 0 16px !important;
+  max-width: min(520px, calc(100vw - 48px)) !important;
+  min-width: 0 !important;
+  min-height: var(--hxyrule-ctrl-h, 44px) !important;
+  height: var(--hxyrule-ctrl-h, 44px) !important;
+  max-height: var(--hxyrule-ctrl-h, 44px) !important;
+  line-height: 22px !important;
+  color: #fff !important;
+  font-size: var(--hxyrule-font, 14px) !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.02em !important;
+  text-decoration: none !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  background: linear-gradient(180deg, #2a3140 0%, #232934 100%) !important;
+  border: 1px solid #3d4654 !important;
+  border-radius: 999px !important;
+  box-sizing: border-box !important;
+  cursor: pointer !important;
+  gap: 0 !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  z-index: 2 !important;
+}
+
+.hxyrule-playlist-native-title .hxyrule-playlist-title-label {
+  flex: 0 1 auto !important;
+  position: relative !important;
+  z-index: 1 !important;
+  max-width: min(420px, calc(100vw - 320px)) !important;
+}
+
+/* Brand count chip — first-row left end. */
+.hxyrule-playlist-native-title .hxyrule-favcount,
+.hxyrule-favorites-lib-row .hxyrule-favcount {
+  position: absolute !important;
+  top: 50% !important;
+  left: 16px !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: translateY(-50%) !important;
+  max-width: min(360px, calc(42vw - 24px)) !important;
+  justify-self: start !important;
+}
+
+/* Libraries switcher — first-row right end. */
+.hxyrule-playlist-native-title .hxyrule-playlist-lib-btn,
+.hxyrule-favorites-lib-row .hxyrule-playlist-lib-btn {
+  position: absolute !important;
+  top: 50% !important;
+  right: 16px !important;
+  left: auto !important;
+  bottom: auto !important;
+  transform: translateY(-50%) !important;
+  max-width: min(220px, calc(50vw - 32px)) !important;
+}
+
+.hxyrule-playlist-native-title .hxyrule-playlist-title-label:hover,
+.hxyrule-playlist-native-title .hxyrule-playlist-lib-btn:hover,
+.hxyrule-favorites-lib-row .hxyrule-playlist-lib-btn:hover,
+.hxyrule-playlist-native-title .hxyrule-favcount:hover,
+.hxyrule-favorites-lib-row .hxyrule-favcount:hover {
+  border-color: #526074 !important;
+  background: linear-gradient(180deg, #323a4c 0%, #2a3140 100%) !important;
+  color: #fff !important;
+  text-decoration: none !important;
+}
+
+/* Inner anchors inherit the pill; do not nest a second chip. */
+.hxyrule-playlist-native-title .hxyrule-playlist-title-label a {
+  display: inline !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  max-width: none !important;
+  min-height: 0 !important;
+  height: auto !important;
+  color: inherit !important;
+  font: inherit !important;
+  letter-spacing: inherit !important;
+  text-decoration: none !important;
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Drop site spacers / clearfix junk left inside the title node. */
+.hxyrule-playlist-native-title .hxyrule-playlist-title-label br,
+.hxyrule-playlist-native-title .hxyrule-playlist-title-label hr,
+.hxyrule-playlist-native-title .hxyrule-playlist-title-label::before,
+.hxyrule-playlist-native-title .hxyrule-playlist-title-label::after {
+  display: none !important;
+  content: none !important;
+}
+
+a.hxyrule-hide-native-fav-nav {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Playlist title leftovers in page flow only — never a headline that wraps thumbs. */
+.headline.hxyrule-hide-native-headline:not(:has(.item.thumb)):not(:has(.thumbs)):not(:has([id$="_items"])),
+div.headline.hxyrule-hide-native-headline:not(:has(.item.thumb)):not(:has(.thumbs)):not(:has([id$="_items"])),
+.hxyrule-fav-box .headline.hxyrule-hide-native-headline:not(:has(.item.thumb)):not(:has(.thumbs)) {
   display: none !important;
   height: 0 !important;
   max-height: 0 !important;
@@ -485,41 +710,18 @@ div.headline.hxyrule-hide-native-headline,
 }
 
 .hxyrule-topstack--playlist > .hxyrule-playlist-page-title,
-.hxyrule-topstack--playlist > .hxyrule-playlist-native-title {
-  margin-bottom: 1px !important; /* title → Select */
+.hxyrule-topstack--playlist > .hxyrule-playlist-native-title,
+.hxyrule-topstack > .hxyrule-favorites-lib-row {
+  margin-bottom: 0 !important; /* rail-style border separates title → Command */
 }
 
 /* Compact spacing from filter row through Jump. */
-.hxyrule-topstack--playlist > .hxyrule-controls {
-  gap: var(--hxyrule-row-gap, 4px) !important;
-  margin-bottom: 0 !important;
-}
-
-.hxyrule-topstack--playlist > .hxyrule-pagination-slot,
-.hxyrule-topstack--playlist > [id$="_pagination"] {
-  margin-bottom: 0 !important;
-}
-
-.hxyrule-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  justify-content: center;
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  background: transparent;
-  border: none;
-  color: #8b9ba9;
-}
-
 .hxyrule-controls {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
-  gap: var(--hxyrule-row-gap, 4px);
+  gap: 0;
   margin: 0;
   padding: 0;
   width: 100%;
@@ -527,72 +729,192 @@ div.headline.hxyrule-hide-native-headline,
   max-width: 100%;
   background: transparent;
   border: none;
-  color: #8b9ba9;
+  color: var(--hxyrule-text, #e8ecf1);
+  font-size: var(--hxyrule-font, 14px);
+  line-height: 22px;
 }
 
-/*
- * Wide Match/View/Select (and Act) rows: scroll horizontally without a
- * visible scrollbar. `safe center` keeps the row centered when it fits, but
- * falls back to start when it overflows so Match's left border stays reachable
- * (plain `center` clips the start and scrollLeft cannot reveal it).
- */
-.hxyrule-pipeline {
+.hxyrule-topstack--playlist > .hxyrule-controls {
   display: flex;
-  flex-wrap: nowrap !important;
-  align-items: center;
-  /* flex-start keeps Match reachable; safe center centers when the row fits. */
+  flex-direction: column;
+  align-items: stretch;
   justify-content: flex-start;
-  justify-content: safe center;
-  gap: 4px;
+  gap: 0;
+  margin: 0;
+  padding: 0;
   width: 100%;
   min-width: 0;
   max-width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--hxyrule-text, #e8ecf1);
+}
+
+.hxyrule-rail {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
   margin: 0;
-  /* End insets so scrolled-to edges still show step borders. */
-  padding: 0 8px;
+  padding: 10px 16px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--hxyrule-rail-line, #2c3640);
+}
+
+.hxyrule-rail-command {
+  padding-top: 12px;
+  background: rgb(255 255 255 / 2.5%);
+}
+
+/* Title chrome already sits above Command — spacing comes from the title
+ * row's bottom padding; the title border-bottom is the row divider. */
+.hxyrule-topstack--playlist .hxyrule-rail-command,
+.hxyrule-topstack:has(> .hxyrule-favorites-lib-row) .hxyrule-rail-command {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.hxyrule-rail-match,
+.hxyrule-rail-view,
+.hxyrule-rail-select {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.hxyrule-controls.hxyrule-middle-collapsed .hxyrule-rail-command,
+.hxyrule-controls.hxyrule-middle-collapsed .hxyrule-rail-match,
+.hxyrule-controls.hxyrule-middle-collapsed .hxyrule-rail-view,
+.hxyrule-controls.hxyrule-middle-collapsed .hxyrule-rail-select {
+  display: none;
+}
+
+.hxyrule-rail-label,
+.hxyrule-chip-group-label {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 4px 0 0;
+  color: var(--hxyrule-muted, #8b95a3);
+  font-size: var(--hxyrule-font-rail, 12px);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.hxyrule-chip-group-label {
+  color: #c5ccd6;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  font-size: var(--hxyrule-font-label, 13px);
+}
+
+.hxyrule-rail-sep {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 1px;
+  height: calc(var(--hxyrule-ctrl-h, 44px) - 10px);
+  margin: 0 4px;
+  background: #3d4652;
+}
+
+.hxyrule-pipeline,
+.hxyrule-cmd-pipeline,
+.hxyrule-match-pipeline,
+.hxyrule-browse-pipeline,
+.hxyrule-select-pipeline {
+  display: flex;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
   -ms-overflow-style: none;
-  scroll-padding-inline: 8px;
+  flex: 1 1 auto;
 }
 
-.hxyrule-pipeline::-webkit-scrollbar {
+.hxyrule-pipeline::-webkit-scrollbar,
+.hxyrule-cmd-pipeline::-webkit-scrollbar,
+.hxyrule-match-pipeline::-webkit-scrollbar,
+.hxyrule-browse-pipeline::-webkit-scrollbar,
+.hxyrule-select-pipeline::-webkit-scrollbar {
   display: none !important;
   width: 0 !important;
   height: 0 !important;
 }
 
-/* Row 2: collection chip left · Sync · Queue · Index · Edit centered */
-.hxyrule-act-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+.hxyrule-cluster {
+  display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
-  justify-content: stretch;
-  gap: 4px;
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
-.hxyrule-act-row > .hxyrule-favcount {
-  grid-column: 1;
+.hxyrule-rail-command .hxyrule-msgbar,
+.hxyrule-rail-command .hxyrule-error {
+  margin-left: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(420px, 36vw);
+}
+
+.hxyrule-reset-all {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.hxyrule-brand.hxyrule-favcount,
+button.hxyrule-favcount {
+  appearance: none;
   justify-self: start;
-  align-self: center;
-  z-index: 2;
-  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0 16px;
+  width: auto;
+  max-width: min(360px, 42vw);
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  height: var(--hxyrule-ctrl-h, 44px);
+  color: #fff;
+  font-size: var(--hxyrule-font, 14px);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 22px;
+  background: linear-gradient(180deg, #2a3140 0%, #232934 100%);
+  border: 1px solid #3d4654;
+  border-radius: 999px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  z-index: 1;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
-.hxyrule-act-row > .hxyrule-act-pipeline {
-  grid-column: 2;
-  justify-self: center;
-  align-self: center;
-  width: auto;
-  min-width: 0;
-  max-width: 100%;
-  flex-wrap: nowrap !important;
+button.hxyrule-favcount:hover {
+  border-color: #526074;
+  background: linear-gradient(180deg, #323a4c 0%, #2a3140 100%);
+}
+
+.hxyrule-topstack:has(.hxyrule-controls.hxyrule-middle-collapsed) button.hxyrule-favcount,
+.hxyrule-controls.hxyrule-middle-collapsed button.hxyrule-favcount {
+  border-color: var(--hxyrule-accent, #3f7ea8);
+  box-shadow: inset 0 0 0 1px rgb(63 126 168 / 35%);
 }
 
 .hxyrule-step {
@@ -600,26 +922,19 @@ div.headline.hxyrule-hide-native-headline,
   flex-direction: row;
   flex-wrap: nowrap !important;
   align-items: stretch;
-  /* Adjacent tiles (no sep): 2px. With sep: gap on both sides + 1px line. */
-  gap: 2px;
+  gap: 4px;
   box-sizing: border-box;
   flex: 0 0 auto;
   width: max-content;
   max-width: 100%;
-  min-height: var(--hxyrule-step-height, 30px);
-  padding: 0 5px;
-  border-radius: 7px;
-  border: 1px solid #5a6670;
-  background: #2c3b48;
-  font-size: 12px;
-  line-height: 18px;
+  min-height: var(--hxyrule-step-height, 44px);
+  padding: 0 6px;
+  border-radius: var(--hxyrule-radius, 8px);
+  border: 1px solid #3d4652;
+  background: var(--hxyrule-control, #2f3b46);
+  font-size: var(--hxyrule-font, 14px);
+  line-height: 22px;
   overflow: visible;
-}
-
-/* Row 1/2 steps must keep their content width so they stay on one toolbar row. */
-.hxyrule-controls .hxyrule-pipeline > .hxyrule-step,
-.hxyrule-act-pipeline > .hxyrule-step {
-  max-width: none;
 }
 
 .hxyrule-step-name {
@@ -628,8 +943,8 @@ div.headline.hxyrule-hide-native-headline,
   align-items: center;
   align-self: center;
   margin: 0;
-  padding: 0 2px;
-  font-size: 12px;
+  padding: 0 4px;
+  font-size: var(--hxyrule-font-label, 13px);
   font-weight: 800;
   letter-spacing: 0.03em;
   color: #aeb9c4;
@@ -640,28 +955,27 @@ div.headline.hxyrule-hide-native-headline,
 .hxyrule-chip-set {
   display: inline-flex;
   align-items: center;
-  gap: 0;
+  gap: 4px;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
 }
 
-/* Small controls: site-gray tiles (lighter than the large step panel). */
 .hxyrule-chip {
   appearance: none;
   margin: 0;
-  padding: 5px 10px;
+  padding: 8px 14px;
   border: 0;
-  border-radius: 4px;
-  background: #4d5b68;
+  border-radius: var(--hxyrule-radius, 8px);
+  background: var(--hxyrule-control, #2f3b46);
   color: #fff;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--hxyrule-font, 14px);
   font-weight: 700;
-  line-height: 20px;
-  min-height: 30px;
-  height: 30px;
+  line-height: 22px;
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  height: var(--hxyrule-ctrl-h, 44px);
   align-self: center;
   display: inline-flex;
   align-items: center;
@@ -669,27 +983,92 @@ div.headline.hxyrule-hide-native-headline,
   box-sizing: border-box;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .hxyrule-chip:hover {
   color: #fff;
-  background: #5f7080;
+  background: var(--hxyrule-control-hover, #3d4b58);
 }
 
 .hxyrule-chip.is-active,
 .hxyrule-chip.is-active:hover {
-  background: #ce5f5d;
+  background: var(--hxyrule-chip-on, #ce5f5d);
   border-color: transparent;
   color: #fff;
 }
 
+.hxyrule-compact-tools {
+  display: none;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: 4px;
+}
+
+.hxyrule-compact-tools.is-open {
+  display: inline-flex;
+}
+
+.hxyrule-controls .hxyrule-sort-seg,
+.hxyrule-controls .hxyrule-view-seg {
+  gap: 0;
+  border-radius: var(--hxyrule-radius, 8px);
+  overflow: hidden;
+  background: #252b34;
+  box-shadow: inset 0 0 0 1px #3a424e;
+}
+
+.hxyrule-controls .hxyrule-sort-seg .hxyrule-btn,
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn {
+  background: transparent;
+  color: #b8c0cb;
+  font-weight: 700;
+  border-radius: 0;
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  height: var(--hxyrule-ctrl-h, 44px);
+}
+
+.hxyrule-controls .hxyrule-sort-seg .hxyrule-btn + .hxyrule-btn,
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn + .hxyrule-btn {
+  box-shadow: inset 1px 0 0 #3a424e;
+}
+
+.hxyrule-controls .hxyrule-sort-seg .hxyrule-btn:hover,
+.hxyrule-controls .hxyrule-view-seg .hxyrule-btn:hover {
+  background: rgb(255 255 255 / 6%);
+  color: #fff;
+}
+
+.hxyrule-controls .hxyrule-sort-seg .hxyrule-btn.is-active-sort,
+.hxyrule-controls .hxyrule-sort-seg .hxyrule-btn.is-active-sort:hover {
+  background: var(--hxyrule-accent, #3f7ea8);
+  color: #fff;
+  box-shadow: none;
+}
+
+.hxyrule-controls .hxyrule-sort-seg .hxyrule-btn:disabled,
+.hxyrule-controls .hxyrule-sort-seg .hxyrule-btn:disabled:hover {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Legacy act-row (removed from DOM) — keep harmless if leftover. */
+.hxyrule-act-row {
+  display: none !important;
+}
+
 .hxyrule-inline-range {
   display: inline-flex;
-  align-items: center;
+  align-items: stretch;
   align-self: center;
-  gap: 2px;
+  gap: 0;
   padding: 0;
   box-sizing: border-box;
+  border-radius: var(--hxyrule-radius, 8px);
+  overflow: hidden;
+  background: var(--hxyrule-control, #2f3b46);
+  box-shadow: inset 0 0 0 1px #3d4652;
 }
 
 .hxyrule-dur,
@@ -697,44 +1076,53 @@ div.headline.hxyrule-hide-native-headline,
   display: inline-flex;
   align-items: center;
   align-self: center;
-  gap: 1px;
-  padding: 5px 4px;
-  min-height: 30px;
-  height: 30px;
+  gap: 3px;
+  padding: 6px 10px;
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  height: var(--hxyrule-ctrl-h, 44px);
   box-sizing: border-box;
-  border-radius: 4px;
-  background: #4d5b68;
+  border-radius: var(--hxyrule-radius, 8px);
+  background: var(--hxyrule-control, #2f3b46);
   color: #fff;
   white-space: nowrap;
 }
 
+.hxyrule-inline-range .hxyrule-paren-field {
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .hxyrule-dur__label {
   font-weight: 700;
-  margin-right: 0;
-  color: #fff;
+  margin-right: 2px;
+  color: #c5ccd6;
+  font-size: var(--hxyrule-font-label, 13px);
 }
 
 .hxyrule-paren,
 .hxyrule-paren-sep {
-  color: #fff;
+  color: #c5ccd6;
   font-weight: 700;
+  font-size: var(--hxyrule-font-label, 13px);
 }
 
 .hxyrule-dur input,
 .hxyrule-paren-field input,
 .hxyrule-inline-range > input {
   box-sizing: border-box;
-  width: 2.6em;
-  min-width: 2.6em;
-  height: 20px;
+  width: 3em;
+  min-width: 3em;
+  height: 24px;
   margin: 0;
-  padding: 0 1px;
+  padding: 0 2px;
   border: none;
   border-radius: 0;
   border-bottom: none;
   background: transparent;
   color: #fff;
-  font-size: 12px;
+  font-size: var(--hxyrule-font, 14px);
   font-weight: 600;
   text-align: center;
   box-shadow: none;
@@ -766,7 +1154,7 @@ div.headline.hxyrule-hide-native-headline,
   -webkit-text-fill-color: #fff !important;
   caret-color: #fff;
   transition: background-color 99999s ease-out;
-  box-shadow: 0 0 0 30px #4d5b68 inset !important;
+  box-shadow: 0 0 0 40px var(--hxyrule-control, #2f3b46) inset !important;
 }
 
 .hxyrule-dur input::placeholder,
@@ -779,24 +1167,24 @@ div.headline.hxyrule-hide-native-headline,
 .hxyrule-field {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  min-height: 30px;
-  height: 30px;
-  padding: 5px 8px;
+  gap: 6px;
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  height: var(--hxyrule-ctrl-h, 44px);
+  padding: 6px 12px;
   border: 0;
-  border-radius: 4px;
-  background: #4d5b68;
-  font-size: 12px;
+  border-radius: var(--hxyrule-radius, 8px);
+  background: var(--hxyrule-control, #2f3b46);
+  font-size: var(--hxyrule-font, 14px);
   box-sizing: border-box;
 }
 
 .hxyrule-field-compact {
-  padding: 5px 6px;
+  padding: 6px 10px;
 }
 
 .hxyrule-field-label {
   color: #aeb9c4;
-  font-size: 12px;
+  font-size: var(--hxyrule-font-label, 13px);
   font-weight: 800;
   letter-spacing: 0.03em;
   white-space: nowrap;
@@ -805,19 +1193,19 @@ div.headline.hxyrule-hide-native-headline,
 .hxyrule-field-controls {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
 }
 
 .hxyrule-field-sep {
   color: #aeb9c4;
-  font-size: 12px;
+  font-size: var(--hxyrule-font-label, 13px);
 }
 
 .hxyrule-field input {
   box-sizing: border-box;
-  width: 3.2em;
-  min-width: 3.2em;
-  height: 20px;
+  width: 3.4em;
+  min-width: 3.4em;
+  height: 24px;
   margin: 0;
   padding: 0 2px;
   border: none;
@@ -825,36 +1213,60 @@ div.headline.hxyrule-hide-native-headline,
   border-bottom: none;
   background: transparent;
   color: #fff;
-  font-size: 12px;
+  font-size: var(--hxyrule-font, 14px);
   font-weight: 600;
   text-align: center;
 }
 
 .hxyrule-pages-step {
-  flex: 0 0 auto;
-  width: max-content;
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  width: auto;
   max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
 }
 
 .hxyrule-pages-host {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   align-self: center;
   width: max-content;
   max-width: 100%;
-  height: 30px;
-  min-height: 30px;
+  min-width: 0;
+  height: var(--hxyrule-ctrl-h, 44px);
+  min-height: var(--hxyrule-ctrl-h, 44px);
   padding: 0;
   box-sizing: border-box;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.hxyrule-pages-host::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 .hxyrule-pages-host > .hxyrule-pagination-slot,
 .hxyrule-pages-host > [id$="_pagination"] {
+  display: flex !important;
+  position: static !important;
+  float: none !important;
+  clear: none !important;
   width: auto !important;
   max-width: 100%;
   margin: 0 !important;
-  float: none !important;
 }
 
 .hxyrule-row {
@@ -907,34 +1319,35 @@ div.headline.hxyrule-hide-native-headline,
 .hxyrule-filter-dur {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   margin: 0;
-  padding: 4px 7px;
-  font-size: 12px;
-  background: #4d5b68;
-  border-radius: 10px;
+  padding: 6px 12px;
+  background: var(--hxyrule-control, #2f3b46);
+  border-radius: var(--hxyrule-radius, 8px);
   color: #fff;
-  font-size: 13px;
+  font-size: var(--hxyrule-font, 14px);
   font-weight: 600;
   line-height: 1.45;
   white-space: nowrap;
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  box-sizing: border-box;
 }
 
 .hxyrule-filter-dur input {
-  width: 56px;
+  width: 64px;
   margin: 0;
-  padding: 4px 6px;
-  border: 1px solid #5a6670;
-  border-radius: 6px;
-  background: #2c3b48;
+  padding: 4px 8px;
+  border: 1px solid #3d4652;
+  border-radius: var(--hxyrule-radius-sm, 6px);
+  background: #252b34;
   color: #fff;
-  font-size: 13px;
+  font-size: var(--hxyrule-font, 14px);
   font-weight: 600;
 }
 
 .hxyrule-filter-unit {
   opacity: 0.85;
-  font-size: 12px;
+  font-size: var(--hxyrule-font-label, 13px);
   font-weight: 600;
 }
 
@@ -953,19 +1366,49 @@ div.headline.hxyrule-hide-native-headline,
   border-color: #3c464d;
 }
 
+/*
+ * Pending Compact (no compact-active yet): hide native cards only — keep the
+ * list shell measurable so insertBefore host / restore cannot leave a blank page.
+ */
+.hxyrule-native-thumbs-hidden > .item.thumb:not([data-hxyrule-compact='1']),
+.thumbs.hxyrule-native-thumbs-hidden > .item.thumb:not([data-hxyrule-compact='1']),
+[id$='_items'].hxyrule-native-thumbs-hidden > .item.thumb:not([data-hxyrule-compact='1']),
+#list_videos_my_favourite_videos.hxyrule-native-thumbs-hidden .item.thumb:not([data-hxyrule-compact='1']) {
+  display: none !important;
+}
+
 /* Compact matches: hide the entire native grid; host sits in its place. */
 html.hxyrule-compact-active .hxyrule-native-thumbs-hidden,
 html.hxyrule-compact-active .hxyrule-compact-native-hidden {
   display: none !important;
 }
 
-/* Native favorites/playlist pager stays in the toolbar but is inert in compact view. */
+/* Compact owns toolbar Pages: hide EVERY native list pager (parked in Pages or
+   re-inserted under the card grid). Compact match pager is a different node. */
 html.hxyrule-compact-active .hxyrule-pagination-slot,
 html.hxyrule-compact-active #list_videos_my_favourite_videos_pagination,
-html.hxyrule-compact-active [id^="list_videos"][id$="_pagination"] {
-  opacity: 0.35;
-  pointer-events: none;
-  filter: grayscale(0.2);
+html.hxyrule-compact-active [id^="list_videos"][id$="_pagination"],
+html.hxyrule-compact-active .box > .pagination,
+html.hxyrule-compact-active [id^="list_videos"] > .pagination {
+  display: none !important;
+}
+
+/* Show-all: only hide under-list copies when Pages already hosts a real pager
+   with page controls. A bare .hxyrule-pagination-slot remnant must not blank
+   the only remaining native bar. */
+html:not(.hxyrule-compact-active):has(.hxyrule-pages-host .hxyrule-pagination-slot .item)
+  .hxyrule-fav-box
+  > [id$='_pagination'],
+html:not(.hxyrule-compact-active):has(.hxyrule-pages-host .hxyrule-pagination-slot .item)
+  .hxyrule-fav-box
+  > .pagination,
+html:not(.hxyrule-compact-active):has(.hxyrule-pages-host .hxyrule-pagination-slot .item)
+  .hxyrule-fav-box
+  ~ [id$='_pagination'],
+html:not(.hxyrule-compact-active):has(.hxyrule-pages-host .hxyrule-pagination-slot .item)
+  .hxyrule-fav-box
+  ~ .pagination {
+  display: none !important;
 }
 
 html.hxyrule-compact-active .hxyrule-compact-thumbs,
@@ -1007,17 +1450,27 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   position: relative;
   overflow: hidden;
   max-width: 100%;
+  /* Site .wrap_image uses padding-bottom:69% — 4/3 left a ~6% empty strip under the poster. */
+  aspect-ratio: 100 / 69;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 8px 8px 0 0;
+  background: #1a222a;
 }
 
 /* In-card hover preview (site handlers do not bind to compact clones). */
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th video,
 .hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th video.hxyrule-compact-preview {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover !important;
   z-index: 2;
-  pointer-events: none;
+  pointer-events: none !important;
   background: #000;
 }
 
@@ -1061,20 +1514,40 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   white-space: nowrap;
 }
 
-/* Only the thumb image — never rating/views icons inside the pick rail. */
-.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th > img {
-  display: block;
-  width: 100%;
-  height: auto;
-  object-fit: cover;
-  max-width: 100%;
+/* Site nests poster in .img.wrap_image (padding-bottom:69% + radius). Pin that
+ * box to a.th so it cannot leave a page-colored gap above the pick rail. */
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th .img.wrap_image,
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th .wrap_image {
+  position: absolute !important;
+  inset: 0 !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  overflow: hidden !important;
+  background: #000 !important;
+}
+
+/* Poster fills the locked a.th box — never owns height by itself. */
+.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th img {
+  position: absolute !important;
+  inset: 0 !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  max-width: none !important;
+  border-radius: 0 !important;
 }
 
 .hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact='1'] > a.th .time {
+  position: absolute !important;
   display: block !important;
   visibility: visible !important;
   z-index: 3;
-  pointer-events: none;
+  pointer-events: none !important;
 }
 
 .item.thumb[data-hxyrule-compact='1'] img.hxyrule-compact-missing-thumb,
@@ -1086,44 +1559,74 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   object-fit: cover;
 }
 
-/* Separate pager under the match grid — not the toolbar native pager. */
+/* Compact match pager — mounted in toolbar Pages, same height as native tiles. */
 .hxyrule-compact-pager {
-  clear: both;
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
+  flex-direction: row;
   align-items: center;
-  gap: 6px;
-  margin: 10px 0 16px;
-  padding: 8px 10px;
-  width: 100%;
+  align-self: center;
+  clear: none;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  width: auto;
+  max-width: 100%;
+  height: var(--hxyrule-ctrl-h, 44px);
+  min-height: var(--hxyrule-ctrl-h, 44px);
   box-sizing: border-box;
 }
 
+.hxyrule-pages-host > .hxyrule-compact-pager {
+  flex: 0 0 auto;
+}
+
 .hxyrule-compact-pager-nav {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: inline-flex;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
   align-items: center;
-  gap: 4px;
+  gap: 0;
+  height: 100%;
 }
 
 .hxyrule-compact-pager-gap {
   color: #8b9ba9;
-  font-size: 12px;
+  font-size: var(--hxyrule-font, 14px);
+  line-height: 22px;
   padding: 0 2px;
   user-select: none;
 }
 
-.hxyrule-compact-page-btn {
-  min-width: 2rem;
+/* Match native pagination tiles (min square + 8×12 pad). Beat
+ * `.hxyrule-topstack .hxyrule-btn { min-width: 0 }` so single digits stay wide. */
+.hxyrule-topstack .hxyrule-compact-pager .hxyrule-compact-page-btn,
+.hxyrule-compact-pager .hxyrule-compact-page-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: var(--hxyrule-ctrl-h, 44px);
+  height: var(--hxyrule-ctrl-h, 44px);
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  max-height: var(--hxyrule-ctrl-h, 44px);
+  margin: 0 2px;
+  padding: 8px 12px;
+  font-size: var(--hxyrule-font, 14px);
+  line-height: 22px;
+  box-sizing: border-box;
+  border-radius: var(--hxyrule-radius, 8px);
 }
 
 /* Highlight the current page numeral — not a filled background chip. */
+.hxyrule-topstack .hxyrule-compact-pager .hxyrule-compact-page-btn.is-current,
+.hxyrule-topstack .hxyrule-compact-pager .hxyrule-compact-page-btn.is-current:hover,
+.hxyrule-topstack .hxyrule-compact-pager .hxyrule-compact-page-btn.is-current:disabled,
 .hxyrule-compact-pager .hxyrule-compact-page-btn.is-current,
 .hxyrule-compact-pager .hxyrule-compact-page-btn.is-current:hover,
 .hxyrule-compact-pager .hxyrule-compact-page-btn.is-current:disabled {
   background: #4d5b68;
-  color: #ffd28a;
+  color: #ffd28a !important;
   font-weight: 800;
   text-decoration: none;
   pointer-events: none;
@@ -1133,41 +1636,237 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 220px;
+  max-height: 320px;
   overflow: auto;
   margin: 0 0 10px;
   text-align: left;
 }
 
-.hxyrule-modal .hxyrule-playlist-option {
+.hxyrule-playlist-dialog .hxyrule-playlist-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: 6px;
+  gap: 4px;
+}
+
+.hxyrule-playlist-empty {
+  margin: 0;
+  padding: 18px 10px;
+  color: var(--hxyrule-muted, #8b95a3);
+  text-align: center;
+  font-size: var(--hxyrule-font-rail, 12px);
+}
+
+.hxyrule-modal .hxyrule-playlist-option,
+.hxyrule-playlist-dialog .hxyrule-playlist-option {
   display: flex;
   align-items: center;
   gap: 0;
   margin: 0;
-  padding: 5px 10px;
-  border-radius: 6px;
+  min-height: 40px;
+  padding: 10px 12px;
+  border-radius: var(--hxyrule-radius-sm, 6px);
   border: 1px solid transparent;
-  background: #2c3b48;
+  background: var(--hxyrule-control, #2f3b46);
   color: #fff;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--hxyrule-font-rail, 12px);
+  font-weight: 600;
   line-height: 1.35;
+  box-sizing: border-box;
   cursor: pointer;
   user-select: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
-.hxyrule-modal .hxyrule-playlist-option:hover {
-  background: #354553;
+.hxyrule-playlist-dialog .hxyrule-playlist-option {
+  border-color: var(--hxyrule-rail-line, #2c3640);
+  padding: 6px 8px;
+  min-height: 36px;
+}
+
+.hxyrule-modal .hxyrule-playlist-option:hover,
+.hxyrule-playlist-dialog .hxyrule-playlist-option:hover {
+  background: var(--hxyrule-control-hover, #3d4b58);
   color: #fff;
 }
 
-.hxyrule-modal .hxyrule-playlist-option.is-selected {
-  background: #ce5f5d;
-  border-color: #e08886;
+.hxyrule-playlist-dialog .hxyrule-playlist-option:hover {
+  border-color: #3a4652;
+}
+
+.hxyrule-modal .hxyrule-playlist-option.is-selected,
+.hxyrule-playlist-dialog .hxyrule-playlist-option.is-selected {
+  background: var(--hxyrule-chip-on, #ce5f5d);
+  border-color: var(--hxyrule-danger-hover, #e08886);
   color: #fff;
 }
 
-.hxyrule-modal .hxyrule-playlist-option input {
+.hxyrule-modal .hxyrule-library-nav-item,
+.hxyrule-modal .hxyrule-library-select-item {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: var(--hxyrule-font-rail, 12px);
+  font-weight: 600;
+  line-height: 1.35;
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 40px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+
+.hxyrule-modal .hxyrule-library-select-item {
+  color: #fff;
+  cursor: pointer;
+}
+
+.hxyrule-modal .hxyrule-library-nav-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+}
+
+.hxyrule-modal .hxyrule-library-nav-row .hxyrule-library-nav-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hxyrule-modal .hxyrule-library-rename-btn {
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 28px;
+  height: 28px;
+  padding: 4px 8px;
+  font-size: var(--hxyrule-font-label, 13px);
+}
+
+
+.hxyrule-modal.hxyrule-library-switcher {
+  width: min(420px, calc(100vw - 24px));
+}
+
+.hxyrule-modal.hxyrule-library-switcher .hxyrule-library-to-label {
+  margin: -4px 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+  color: var(--hxyrule-danger, #ce5f5d);
+}
+
+.hxyrule-modal.hxyrule-library-switcher .hxyrule-library-to-label--warn {
+  color: var(--hxyrule-danger-hover, #e08886);
+}
+
+.hxyrule-modal.hxyrule-library-switcher .hxyrule-library-nav-list {
+  max-height: min(420px, 60vh);
+}
+
+.hxyrule-modal.hxyrule-library-switcher .hxyrule-library-actions {
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.hxyrule-library-actions-left,
+.hxyrule-library-actions-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.hxyrule-modal.hxyrule-library-switcher--delete .hxyrule-library-to-label {
+  color: #fff;
+}
+
+.hxyrule-library-create-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 12px;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid #3a4652;
+  border-radius: var(--hxyrule-radius-sm, 6px);
+  background: #171e24;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+}
+
+.hxyrule-library-create-input:focus {
+  outline: none;
+  border-color: var(--hxyrule-primary, #3f9a6f);
+  box-shadow: 0 0 0 2px rgba(63, 154, 111, 0.25);
+}
+
+.hxyrule-modal-backdrop--stack {
+  z-index: 2147483010;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.hxyrule-modal--confirm {
+  width: min(440px, calc(100vw - 24px));
+  padding: 20px 20px 16px;
+  border-radius: 12px;
+  border-color: #44515e;
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  animation: hxyrule-confirm-in 0.16s ease-out;
+}
+
+.hxyrule-modal--confirm h3 {
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.hxyrule-modal--danger h3 {
+  color: #f0b4b2;
+}
+
+.hxyrule-confirm-body {
+  margin: 0 0 4px;
+}
+
+.hxyrule-confirm-line {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cfd6dd;
+  line-height: 1.45;
+}
+
+.hxyrule-modal--confirm .hxyrule-modal__actions {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #343f4a;
+}
+
+@keyframes hxyrule-confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.hxyrule-modal .hxyrule-playlist-option input,
+.hxyrule-playlist-dialog .hxyrule-playlist-option input {
   position: absolute;
   opacity: 0;
   width: 0;
@@ -1176,12 +1875,14 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   pointer-events: none;
 }
 
-.hxyrule-modal .hxyrule-playlist-option span {
+.hxyrule-modal .hxyrule-playlist-option span,
+.hxyrule-playlist-dialog .hxyrule-playlist-option span {
   color: inherit;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
 
 .hxyrule-topstack .hxyrule-pagination-slot,
 .hxyrule-topstack #list_videos_my_favourite_videos_pagination,
@@ -1190,11 +1891,13 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination {
   margin: 0 !important;
   padding: 0 !important;
-  width: 100%;
-  display: flex;
-  justify-content: center;
+  width: auto !important;
+  max-width: 100% !important;
+  display: flex !important;
+  justify-content: flex-start;
   float: none !important;
-  clear: both !important;
+  clear: none !important;
+  position: static !important;
 }
 
 /* Playlist pagination lives in Pages step on row 3 — no separate spacer. */
@@ -1210,86 +1913,89 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   display: inline-flex;
   flex: 0 0 auto;
   flex-wrap: nowrap;
-  align-items: stretch;
-  justify-content: center;
-  gap: 2px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
   margin: 0;
-  padding: 0 5px;
+  padding: 0;
   width: auto;
   max-width: 100%;
-  min-height: var(--hxyrule-step-height, 30px);
+  min-height: var(--hxyrule-ctrl-h, 44px);
   box-sizing: border-box;
-  border-radius: 7px;
-  border: 1px solid #5a6670;
-  background: #2c3b48;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: #fff;
-  font-size: 12px;
+  font-size: var(--hxyrule-font, 14px);
   white-space: nowrap;
   overflow: visible;
 }
 
-/* Full-width jump row: Jump left · Pages center · status right */
-.hxyrule-jumprow {
+/* Nav rail: Pages · Jump — same rail chrome as Match / View / Select */
+.hxyrule-jumprow,
+.hxyrule-rail-nav {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  display: flex;
+  flex-wrap: nowrap;
   align-items: center;
+  gap: 14px;
   width: 100%;
+  min-width: 0;
   margin: 0;
-  padding: 0;
+  padding: 10px 16px 12px;
   box-sizing: border-box;
   min-height: 0;
   clear: both;
   float: none;
+  border-top: 0;
+  border-bottom: 0;
 }
 
-.hxyrule-favcount {
-  justify-self: start;
-  position: relative;
-  left: auto;
-  top: auto;
-  transform: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0;
-  padding: 0 8px;
-  width: auto;
-  max-width: 100%;
-  min-height: var(--hxyrule-step-height, 30px);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  line-height: 18px;
-  background: #2c3b48;
-  border: 1px solid #5a6670;
-  border-radius: 7px;
-  box-sizing: border-box;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  z-index: 1;
-}
-
-.hxyrule-jumprow > .hxyrule-pagination-slot {
-  grid-column: 2;
-  justify-self: center;
+.hxyrule-jumprow > .hxyrule-pages-step,
+.hxyrule-rail-nav > .hxyrule-pages-step,
+.hxyrule-jumprow > .hxyrule-pagination-slot,
+.hxyrule-rail-nav > .hxyrule-pagination-slot {
+  flex: 1 1 auto;
+  min-width: 0;
   width: auto !important;
   max-width: 100%;
 }
 
-.hxyrule-jumprow > .hxyrule-pagination-slot .pagination {
+.hxyrule-jumprow > .hxyrule-nav-tail-sep,
+.hxyrule-rail-nav > .hxyrule-nav-tail-sep {
+  margin-left: auto;
+}
+
+.hxyrule-jumprow > .hxyrule-jumpbar,
+.hxyrule-rail-nav > .hxyrule-jumpbar {
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+
+.hxyrule-jumprow > .hxyrule-pagination-slot .pagination,
+.hxyrule-rail-nav > .hxyrule-pagination-slot .pagination {
   width: auto !important;
 }
 
 .hxyrule-jumpbar .hxyrule-paren-field {
-  min-height: 0;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 3px;
+  margin: 0;
+  padding: 6px 10px;
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  height: var(--hxyrule-ctrl-h, 44px);
+  box-sizing: border-box;
+  border-radius: var(--hxyrule-radius, 8px);
+  background: var(--hxyrule-control, #2f3b46);
+  color: #fff;
+  white-space: nowrap;
 }
 
 .hxyrule-jumpbar .hxyrule-paren-field input {
-  width: 3.2em;
-  min-width: 3.2em;
+  width: 3.4em;
+  min-width: 3.4em;
 }
 
 .hxyrule-hide-native-jump {
@@ -1299,17 +2005,17 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-btn {
   appearance: none;
   border: none;
-  background: #4d5b68;
+  background: var(--hxyrule-control, #2f3b46);
   color: #fff;
-  border-radius: 4px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 20px;
-  min-height: 30px;
-  height: 30px;
+  border-radius: var(--hxyrule-radius, 8px);
+  padding: 8px 14px;
+  font-size: var(--hxyrule-font, 14px);
+  font-weight: 700;
+  line-height: 22px;
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  height: var(--hxyrule-ctrl-h, 44px);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.12s ease, color 0.12s ease;
   text-transform: none;
   white-space: nowrap;
   box-sizing: border-box;
@@ -1321,17 +2027,75 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 
 /* Modal / non-segmented surfaces keep solid buttons. */
 .hxyrule-modal .hxyrule-btn,
-.hxyrule-modal-backdrop .hxyrule-btn {
-  background: #4d5b68;
-  border-radius: 6px;
-  min-height: 32px;
+.hxyrule-modal-backdrop .hxyrule-btn,
+.hxyrule-status-dialog .hxyrule-btn,
+.hxyrule-tasks-dialog .hxyrule-btn,
+.hxyrule-playlist-dialog .hxyrule-btn {
+  background: var(--hxyrule-control, #2f3b46);
+  border-radius: var(--hxyrule-radius-sm, 6px);
+  min-height: 36px;
   height: auto;
-  padding: 6px 12px;
+  padding: 8px 14px;
 }
 
 .hxyrule-modal .hxyrule-btn:hover,
-.hxyrule-modal-backdrop .hxyrule-btn:hover {
-  background: #5f7080;
+.hxyrule-modal-backdrop .hxyrule-btn:hover,
+.hxyrule-status-dialog .hxyrule-btn:hover,
+.hxyrule-tasks-dialog .hxyrule-btn:hover,
+.hxyrule-playlist-dialog .hxyrule-btn:hover {
+  background: var(--hxyrule-control-hover, #3d4b58);
+}
+
+.hxyrule-modal .hxyrule-btn--primary,
+.hxyrule-modal-backdrop .hxyrule-btn--primary,
+.hxyrule-status-dialog .hxyrule-btn--primary,
+.hxyrule-tasks-dialog .hxyrule-btn--primary,
+.hxyrule-playlist-dialog .hxyrule-btn--primary {
+  background: var(--hxyrule-primary, #3f9a6f);
+}
+
+.hxyrule-modal .hxyrule-btn--primary:hover,
+.hxyrule-modal-backdrop .hxyrule-btn--primary:hover,
+.hxyrule-status-dialog .hxyrule-btn--primary:hover,
+.hxyrule-tasks-dialog .hxyrule-btn--primary:hover,
+.hxyrule-playlist-dialog .hxyrule-btn--primary:hover {
+  background: var(--hxyrule-primary-hover, #4eb082);
+}
+
+.hxyrule-modal .hxyrule-btn--accent,
+.hxyrule-modal-backdrop .hxyrule-btn--accent,
+.hxyrule-status-dialog .hxyrule-btn--accent,
+.hxyrule-tasks-dialog .hxyrule-btn--accent,
+.hxyrule-playlist-dialog .hxyrule-btn--accent {
+  background: var(--hxyrule-accent, #3f7ea8);
+}
+
+.hxyrule-modal .hxyrule-btn--accent:hover,
+.hxyrule-modal-backdrop .hxyrule-btn--accent:hover,
+.hxyrule-status-dialog .hxyrule-btn--accent:hover,
+.hxyrule-tasks-dialog .hxyrule-btn--accent:hover,
+.hxyrule-playlist-dialog .hxyrule-btn--accent:hover {
+  background: var(--hxyrule-accent-hover, #4d94c2);
+}
+
+.hxyrule-modal .hxyrule-btn--danger,
+.hxyrule-modal .hxyrule-btn--warn,
+.hxyrule-modal-backdrop .hxyrule-btn--danger,
+.hxyrule-modal-backdrop .hxyrule-btn--warn,
+.hxyrule-status-dialog .hxyrule-btn--danger,
+.hxyrule-tasks-dialog .hxyrule-btn--danger,
+.hxyrule-playlist-dialog .hxyrule-btn--danger {
+  background: var(--hxyrule-danger, #ce5f5d);
+}
+
+.hxyrule-modal .hxyrule-btn--danger:hover,
+.hxyrule-modal .hxyrule-btn--warn:hover,
+.hxyrule-modal-backdrop .hxyrule-btn--danger:hover,
+.hxyrule-modal-backdrop .hxyrule-btn--warn:hover,
+.hxyrule-status-dialog .hxyrule-btn--danger:hover,
+.hxyrule-tasks-dialog .hxyrule-btn--danger:hover,
+.hxyrule-playlist-dialog .hxyrule-btn--danger:hover {
+  background: var(--hxyrule-danger-hover, #e08886);
 }
 
 .hxyrule-step > .hxyrule-btn,
@@ -1340,7 +2104,18 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   align-self: center;
   display: inline-flex;
   align-items: center;
-  height: 30px;
+  height: var(--hxyrule-ctrl-h, 44px);
+  min-height: var(--hxyrule-ctrl-h, 44px);
+}
+
+.hxyrule-inline-range > .hxyrule-btn {
+  border-radius: 0;
+  box-shadow: inset 1px 0 0 #3d4652;
+  background: #37414c;
+}
+
+.hxyrule-inline-range > .hxyrule-btn:hover {
+  background: var(--hxyrule-control-hover, #3d4b58);
 }
 
 .hxyrule-topstack,
@@ -1359,31 +2134,44 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-topstack .hxyrule-error,
 .hxyrule-topstack .hxyrule-jumpbar,
 .hxyrule-topstack input {
-  font-size: 12px !important;
+  font-size: var(--hxyrule-font, 14px) !important;
+}
+
+.hxyrule-topstack .hxyrule-rail-label {
+  font-size: var(--hxyrule-font-rail, 12px) !important;
+}
+
+.hxyrule-topstack .hxyrule-chip-group-label,
+.hxyrule-topstack .hxyrule-step-name,
+.hxyrule-topstack .hxyrule-field-label,
+.hxyrule-topstack .hxyrule-dur__label,
+.hxyrule-topstack .hxyrule-paren,
+.hxyrule-topstack .hxyrule-paren-sep {
+  font-size: var(--hxyrule-font-label, 13px) !important;
 }
 
 .hxyrule-topstack .hxyrule-btn {
   flex: 0 0 auto;
   width: auto;
   min-width: 0;
-  height: 30px;
-  min-height: 30px;
-  padding: 5px 10px;
-  line-height: 20px;
+  height: var(--hxyrule-ctrl-h, 44px);
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  padding: 8px 14px;
+  line-height: 22px;
   overflow: visible;
   text-overflow: clip;
 }
 
 .hxyrule-topstack .hxyrule-chip {
-  height: 30px;
-  min-height: 30px;
-  padding: 5px 10px;
-  line-height: 20px;
+  height: var(--hxyrule-ctrl-h, 44px);
+  min-height: var(--hxyrule-ctrl-h, 44px);
+  padding: 8px 14px;
+  line-height: 22px;
   box-sizing: border-box;
 }
 
 .hxyrule-topstack .hxyrule-btn[data-act="scan"] {
-  min-width: 152px;
+  min-width: 168px;
 }
 
 .hxyrule-action-groups {
@@ -1415,12 +2203,12 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 /* Native pagination varies by site skin; its assigned slot is the stable hook. */
 .hxyrule-topstack .hxyrule-pagination-slot,
 .hxyrule-topstack .hxyrule-pagination-slot .pagination {
-  height: 30px !important;
-  min-height: 30px !important;
-  max-height: 30px !important;
+  height: var(--hxyrule-ctrl-h, 44px) !important;
+  min-height: var(--hxyrule-ctrl-h, 44px) !important;
+  max-height: var(--hxyrule-ctrl-h, 44px) !important;
   padding-top: 0 !important;
   padding-bottom: 0 !important;
-  line-height: 20px !important;
+  line-height: 22px !important;
   box-sizing: border-box !important;
 }
 
@@ -1434,16 +2222,16 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   align-items: center !important;
   justify-content: center !important;
   width: auto !important;
-  min-width: 30px !important;
-  height: 30px !important;
-  min-height: 30px !important;
-  max-height: 30px !important;
-  margin: 0 1px !important;
-  padding: 5px 10px !important;
-  font-size: 12px !important;
-  line-height: 20px !important;
+  min-width: var(--hxyrule-ctrl-h, 44px) !important;
+  height: var(--hxyrule-ctrl-h, 44px) !important;
+  min-height: var(--hxyrule-ctrl-h, 44px) !important;
+  max-height: var(--hxyrule-ctrl-h, 44px) !important;
+  margin: 0 2px !important;
+  padding: 8px 12px !important;
+  font-size: var(--hxyrule-font, 14px) !important;
+  line-height: 22px !important;
   box-sizing: border-box !important;
-  border-radius: 4px !important;
+  border-radius: var(--hxyrule-radius, 8px) !important;
 }
 
 /* One visual rhythm for HXYRULE buttons plus the site's native pagination. */
@@ -1452,18 +2240,18 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item > *,
 .hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item,
 .hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item > * {
-  height: 30px !important;
-  min-height: 30px !important;
-  max-height: 30px !important;
-  font-size: 12px !important;
-  line-height: 20px !important;
+  height: var(--hxyrule-ctrl-h, 44px) !important;
+  min-height: var(--hxyrule-ctrl-h, 44px) !important;
+  max-height: var(--hxyrule-ctrl-h, 44px) !important;
+  font-size: var(--hxyrule-font, 14px) !important;
+  line-height: 22px !important;
   box-sizing: border-box !important;
-  border-radius: 4px !important;
+  border-radius: var(--hxyrule-radius, 8px) !important;
 }
 
 .hxyrule-topstack .hxyrule-filter-dur {
-  padding-top: 4px !important;
-  padding-bottom: 4px !important;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
 }
 
 /* Site skin gives pagination large square dimensions; override every clickable layer. */
@@ -1474,12 +2262,12 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   align-items: center !important;
   justify-content: center !important;
   width: auto !important;
-  min-width: 30px !important;
+  min-width: var(--hxyrule-ctrl-h, 44px) !important;
   padding: 0 !important;
-  margin: 0 1px !important;
-  border-radius: 4px !important;
-  background: #4d5b68 !important;
-  background-color: #4d5b68 !important;
+  margin: 0 2px !important;
+  border-radius: var(--hxyrule-radius, 8px) !important;
+  background: var(--hxyrule-control, #2f3b46) !important;
+  background-color: var(--hxyrule-control, #2f3b46) !important;
   color: #fff !important;
 }
 
@@ -1495,7 +2283,7 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item::after,
 .hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item::before,
 .hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item::after {
-  font-size: 12px !important;
+  font-size: var(--hxyrule-font, 14px) !important;
 }
 
 .hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item > *,
@@ -1504,69 +2292,69 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   align-items: center !important;
   justify-content: center !important;
   width: auto !important;
-  min-width: 30px !important;
-  padding: 5px 10px !important;
+  min-width: var(--hxyrule-ctrl-h, 44px) !important;
+  padding: 8px 12px !important;
   margin: 0 !important;
-  border-radius: 4px !important;
-  background: #4d5b68 !important;
-  background-color: #4d5b68 !important;
+  border-radius: var(--hxyrule-radius, 8px) !important;
+  background: var(--hxyrule-control, #2f3b46) !important;
+  background-color: var(--hxyrule-control, #2f3b46) !important;
 }
 
 /* Green all-local pages stay via JS inline styles; keep CSS from fighting them. */
 .hxyrule-topstack #list_videos_my_favourite_videos_pagination .pagination .item > *.hxyrule-page-local,
 .hxyrule-topstack [id^="list_videos"][id$="_pagination"] .pagination .item > *.hxyrule-page-local {
-  background: #6fae8f !important;
-  background-color: #6fae8f !important;
+  background: var(--hxyrule-primary, #3f9a6f) !important;
+  background-color: var(--hxyrule-primary, #3f9a6f) !important;
 }
 
 .hxyrule-topstack .hxyrule-filter-dur input {
-  font-size: 12px !important;
+  font-size: var(--hxyrule-font, 14px) !important;
   box-sizing: border-box !important;
 }
 
-/* Duration's min/max boxes should nearly fill, but not equal, the 30px pill. */
+/* Duration's min/max boxes should nearly fill, but not equal, the control height. */
 .hxyrule-topstack .hxyrule-filter-dur input {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  height: 26px !important;
-  min-height: 26px !important;
-  max-height: 26px !important;
-  padding: 0 6px !important;
-  line-height: 26px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  max-height: 32px !important;
+  padding: 0 8px !important;
+  line-height: 32px !important;
   text-align: center !important;
   vertical-align: middle !important;
 }
 
 /* Match site `.button_fav:hover` — slight lift */
 .hxyrule-btn:hover {
-  background: #5f7080;
+  background: var(--hxyrule-control-hover, #3d4b58);
   color: #fff;
 }
 
 .hxyrule-btn:disabled,
 .hxyrule-btn:disabled:hover {
-  background: #4d5b68;
-  opacity: 0.5;
+  background: var(--hxyrule-control, #2f3b46);
+  opacity: 0.42;
   cursor: not-allowed;
 }
 
 .hxyrule-btn--primary {
-  background: #6fae8f;
+  background: var(--hxyrule-primary, #3f9a6f);
   color: #fff;
 }
 
 .hxyrule-btn--primary:hover {
-  background: #7fbe9f;
+  background: var(--hxyrule-primary-hover, #4eb082);
 }
 
 .hxyrule-btn--accent {
-  background: #4a5d6d;
+  background: var(--hxyrule-accent, #3f7ea8);
   color: #fff;
 }
 
 .hxyrule-btn--accent:hover {
-  background: #5a7082;
+  background: var(--hxyrule-accent-hover, #4d94c2);
 }
 
 .hxyrule-controls .hxyrule-btn-pair {
@@ -1574,62 +2362,67 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   flex-wrap: nowrap !important;
   align-items: center;
   align-self: center;
-  gap: 2px;
+  gap: 4px;
   flex: 0 0 auto;
 }
 
-.hxyrule-controls .hxyrule-btn-pair [hidden] {
+/* .hxyrule-btn sets display:inline-flex, which overrides the native [hidden]
+   UA rule — Stop next to Refresh lives in .inline-range, not only .btn-pair. */
+.hxyrule-controls .hxyrule-btn[hidden],
+.hxyrule-controls .hxyrule-btn-pair [hidden],
+.hxyrule-inline-range > .hxyrule-btn[hidden] {
   display: none !important;
 }
 
-/* View segmented control — solid active state */
-.hxyrule-controls .hxyrule-view-seg .hxyrule-btn {
-  background: #3f4c58;
-  color: #d7dee6;
-  font-weight: 700;
-}
-
-.hxyrule-controls .hxyrule-view-seg .hxyrule-btn:hover {
-  background: #516273;
-  color: #fff;
-}
-
+/* View segmented control — connected group (see sort-seg above) */
 .hxyrule-controls .hxyrule-view-seg .hxyrule-btn.is-active-view,
 .hxyrule-controls .hxyrule-view-seg .hxyrule-btn.is-active-view:hover {
-  background: #ce5f5d;
+  background: var(--hxyrule-accent, #3f7ea8);
   color: #fff;
   box-shadow: none;
 }
 
 .hxyrule-controls .hxyrule-view-seg .hxyrule-btn:disabled,
 .hxyrule-controls .hxyrule-view-seg .hxyrule-btn:disabled:hover {
-  background: #3f4c58;
-  color: rgba(255, 255, 255, 0.75);
+  background: transparent;
+  color: rgb(255 255 255 / 45%);
 }
 
 .hxyrule-controls .hxyrule-view-seg .hxyrule-btn.is-active-view:disabled,
 .hxyrule-controls .hxyrule-view-seg .hxyrule-btn.is-active-view:disabled:hover {
-  background: #ce5f5d;
+  background: var(--hxyrule-accent, #3f7ea8);
 }
 
 .hxyrule-btn--danger {
-  background: #ce5f5d;
+  background: var(--hxyrule-danger, #ce5f5d);
   color: #fff;
 }
 
 .hxyrule-btn--danger:hover {
-  background: #e08886;
+  background: var(--hxyrule-danger-hover, #e08886);
+}
+
+.hxyrule-btn--pink {
+  background: #e891a8;
+  color: #1a1014;
+}
+
+.hxyrule-btn--pink:hover {
+  background: #f0a3b8;
+  color: #1a1014;
 }
 
 .hxyrule-btn--ghost {
-  background: #4d5b68;
+  background: transparent;
   border: none;
-  color: #fff;
+  color: #c2cad4;
+  box-shadow: inset 0 0 0 1px #3d4652;
 }
 
 .hxyrule-btn--ghost:hover {
-  background: #5f7080;
+  background: rgb(255 255 255 / 6%);
   color: #fff;
+  box-shadow: inset 0 0 0 1px #556070;
 }
 
 .hxyrule-btn--muted {
@@ -1661,16 +2454,10 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   color: rgba(255, 255, 255, 0.4) !important;
 }
 
-/* Row 3: Jump left · Pages center · status right */
-.hxyrule-jumprow > .hxyrule-jumpbar {
-  grid-column: 1;
-  justify-self: start;
-  align-self: center;
-}
-
+/* Legacy Jump/Pages grid placement — superseded by flex nav rail. */
+.hxyrule-jumprow > .hxyrule-jumpbar,
 .hxyrule-jumprow > .hxyrule-pages-step {
-  grid-column: 2;
-  justify-self: center;
+  justify-self: auto;
   align-self: center;
 }
 
@@ -1693,19 +2480,19 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   width: fit-content;
   max-width: 100%;
   min-width: 0;
-  height: var(--hxyrule-step-height, 30px);
-  min-height: var(--hxyrule-step-height, 30px);
+  height: var(--hxyrule-step-height, 44px);
+  min-height: var(--hxyrule-step-height, 44px);
   margin: 0;
-  padding: 0 8px;
+  padding: 0 12px;
   text-align: right;
-  font-size: 12px;
+  font-size: var(--hxyrule-font, 14px);
   font-weight: 700;
-  line-height: var(--hxyrule-step-height, 30px);
+  line-height: var(--hxyrule-step-height, 44px);
   letter-spacing: 0.02em;
   color: #fff;
-  border-radius: 7px;
-  border: 1px solid #5a6670;
-  background: #2c3b48;
+  border-radius: var(--hxyrule-radius, 8px);
+  border: 1px solid #3d4652;
+  background: var(--hxyrule-control, #2f3b46);
   white-space: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
@@ -1717,8 +2504,8 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 
 .hxyrule-msgbar:hover,
 .hxyrule-error:hover {
-  border-color: #7a8494;
-  background: #334655;
+  border-color: #556070;
+  background: var(--hxyrule-control-hover, #3d4b58);
 }
 
 .hxyrule-msgbar.is-error,
@@ -1738,7 +2525,7 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-error .hxyrule-message-text {
   display: inline-block;
   white-space: nowrap;
-  line-height: var(--hxyrule-step-height, 30px);
+  line-height: var(--hxyrule-step-height, 44px);
   vertical-align: top;
 }
 
@@ -1752,23 +2539,33 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   width: fit-content;
   max-width: 100%;
   min-width: 0;
-  min-height: var(--hxyrule-step-height, 30px);
+  min-height: var(--hxyrule-step-height, 44px);
+}
+
+/* Dialogs / modals share the toolbar surface language. */
+.hxyrule-status-dialog,
+.hxyrule-tasks-dialog,
+.hxyrule-playlist-dialog {
+  padding: 0;
+  color: var(--hxyrule-text, #e8ecf1);
+  border: 1px solid #3a4652;
+  border-radius: var(--hxyrule-radius, 8px);
+  background:
+    linear-gradient(180deg, #26313a 0%, var(--hxyrule-surface, #1e2830) 100%);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  font-size: var(--hxyrule-font, 14px);
+  font-weight: 600;
 }
 
 .hxyrule-status-dialog {
   width: min(760px, calc(100vw - 40px));
   max-height: min(70vh, 640px);
-  padding: 0;
-  color: #f1f1f1;
-  border: 1px solid #777b84;
-  border-radius: 6px;
-  background: #34353b;
-  box-shadow: 0 12px 40px rgb(0 0 0 / 60%);
-  font-size: 14px;
 }
 
-.hxyrule-status-dialog::backdrop {
-  background: rgb(0 0 0 / 65%);
+.hxyrule-status-dialog::backdrop,
+.hxyrule-tasks-dialog::backdrop,
+.hxyrule-playlist-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
 }
 
 .hxyrule-status-dialog form {
@@ -1776,14 +2573,16 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   flex-direction: column;
   max-height: min(70vh, 640px);
   box-sizing: border-box;
-  padding: 18px;
+  padding: 16px;
 }
 
 .hxyrule-dialog-title {
-  margin-bottom: 14px;
-  font-size: 18px;
+  margin: 0 0 12px;
+  font-size: 16px;
   font-weight: 700;
+  letter-spacing: 0.02em;
   text-align: center;
+  color: #fff;
 }
 
 .hxyrule-status-log {
@@ -1793,10 +2592,10 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   margin: 0 0 12px;
   padding: 10px 12px;
   overflow: auto;
-  border: 1px solid #555861;
-  border-radius: 6px;
-  background: #242830;
-  color: #d7dde6;
+  border: 1px solid var(--hxyrule-rail-line, #2c3640);
+  border-radius: var(--hxyrule-radius, 8px);
+  background: #171e24;
+  color: var(--hxyrule-text, #e8ecf1);
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   white-space: normal;
 }
@@ -1806,8 +2605,8 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   grid-template-columns: 64px minmax(0, 1fr);
   gap: 10px;
   align-items: baseline;
-  padding: 3px 0;
-  border-bottom: 1px solid rgb(255 255 255 / 6%);
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .hxyrule-status-line:last-child {
@@ -1815,14 +2614,14 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 }
 
 .hxyrule-status-time {
-  color: #8b95a3;
+  color: var(--hxyrule-muted, #8b95a3);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .hxyrule-status-body {
   display: block;
-  color: #e8edf3;
+  color: var(--hxyrule-text, #e8ecf1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1830,91 +2629,169 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 }
 
 .hxyrule-status-line.is-error .hxyrule-status-body {
-  color: #ffb4b8;
+  color: var(--hxyrule-danger-hover, #e08886);
 }
 
 .hxyrule-dialog-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
-.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn {
-  padding: 6px 12px;
-  border: 1px solid #6a6f79;
-  border-radius: 5px;
-  background: #4a4f59;
-  color: #f1f1f1;
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn {
+  padding: 8px 14px;
+  border: none;
+  border-radius: var(--hxyrule-radius-sm, 6px);
+  background: var(--hxyrule-control, #2f3b46);
+  color: #fff;
   height: auto;
-  min-height: 30px;
-  font-size: 14px;
-  font-weight: 600;
+  min-height: 36px;
+  font-size: var(--hxyrule-font, 14px);
+  font-weight: 700;
 }
 
-.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn:hover {
-  background: #585e6a;
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn:hover,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn:hover,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn:hover {
+  background: var(--hxyrule-control-hover, #3d4b58);
+}
+
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn--primary,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn--primary,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn--primary {
+  background: var(--hxyrule-primary, #3f9a6f);
+}
+
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn--primary:hover,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn--primary:hover,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn--primary:hover {
+  background: var(--hxyrule-primary-hover, #4eb082);
+}
+
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn--accent,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn--accent,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn--accent {
+  background: var(--hxyrule-accent, #3f7ea8);
+}
+
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn--accent:hover,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn--accent:hover,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn--accent:hover {
+  background: var(--hxyrule-accent-hover, #4d94c2);
+}
+
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn--danger,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn--danger,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn--danger {
+  background: var(--hxyrule-danger, #ce5f5d);
+}
+
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn--danger:hover,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn--danger:hover,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn--danger:hover {
+  background: var(--hxyrule-danger-hover, #e08886);
+}
+
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn--pink,
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn--pink,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn--pink {
+  background: #e891a8;
+  color: #1a1014;
+}
+
+.hxyrule-playlist-dialog .hxyrule-dialog-actions .hxyrule-btn--pink:hover,
+.hxyrule-status-dialog .hxyrule-dialog-actions .hxyrule-btn--pink:hover,
+.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn--pink:hover {
+  background: #f0a3b8;
+  color: #1a1014;
 }
 
 .hxyrule-tasks-dialog {
   width: min(560px, calc(100vw - 32px));
   max-height: min(80vh, 720px);
-  border: 1px solid #555861;
-  border-radius: 10px;
-  padding: 0;
-  background: #1e232b;
-  color: #e8edf3;
-  box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
 }
-.hxyrule-tasks-dialog::backdrop {
-  background: rgb(0 0 0 / 65%);
+
+.hxyrule-playlist-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(80vh, 720px);
 }
+
 .hxyrule-tasks-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-height: min(80vh, 720px);
   box-sizing: border-box;
-  padding: 18px;
+  padding: 16px;
 }
+
+.hxyrule-playlist-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(80vh, 720px);
+  box-sizing: border-box;
+  padding: 16px;
+}
+
 .hxyrule-tasks-pane {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 240px;
   max-height: min(52vh, 480px);
-  border: 1px solid #555861;
-  border-radius: 8px;
-  background: #242830;
+  border: 1px solid var(--hxyrule-rail-line, #2c3640);
+  border-radius: var(--hxyrule-radius, 8px);
+  background: #171e24;
   overflow: hidden;
 }
+
+.hxyrule-playlist-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 240px;
+  max-height: min(52vh, 480px);
+  border: 1px solid var(--hxyrule-rail-line, #2c3640);
+  border-radius: var(--hxyrule-radius, 8px);
+  background: #171e24;
+  overflow: hidden;
+}
+
 .hxyrule-tasks-pane-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid #555861;
-  background: #2c3b48;
-  font-size: 12px;
+  border-bottom: 1px solid var(--hxyrule-rail-line, #2c3640);
+  background: var(--hxyrule-control, #2f3b46);
+  font-size: var(--hxyrule-font-rail, 12px);
+  color: #fff;
 }
+
 .hxyrule-tasks-pane-tools {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
+
 .hxyrule-tasks-dialog .hxyrule-tasks-select-all {
   appearance: none;
   box-sizing: border-box;
   margin: 0;
   padding: 5px 12px;
   border: 0;
-  border-radius: 4px;
-  background: #4d5b68;
+  border-radius: var(--hxyrule-radius-sm, 6px);
+  background: var(--hxyrule-control-hover, #3d4b58);
   color: #fff;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--hxyrule-font-rail, 12px);
   font-weight: 700;
   line-height: 20px;
   min-height: 30px;
@@ -1924,26 +2801,31 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   justify-content: center;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.12s ease;
 }
+
 .hxyrule-tasks-dialog .hxyrule-tasks-select-all:hover {
-  background: #5f7080;
+  background: #4d5b68;
 }
+
 .hxyrule-tasks-dialog .hxyrule-tasks-select-all:disabled,
 .hxyrule-tasks-dialog .hxyrule-tasks-select-all:disabled:hover {
-  opacity: 0.45;
+  opacity: 0.42;
   cursor: not-allowed;
-  background: #4d5b68;
+  background: var(--hxyrule-control-hover, #3d4b58);
   color: rgba(255, 255, 255, 0.75);
 }
+
 .hxyrule-tasks-count {
   min-width: 1.6em;
   padding: 0 6px;
-  border-radius: 999px;
-  background: #3a4a58;
-  color: #d7dde6;
+  border-radius: var(--hxyrule-radius-sm, 6px);
+  background: #24303a;
+  color: var(--hxyrule-text, #e8ecf1);
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
+
 .hxyrule-tasks-list {
   list-style: none;
   margin: 0;
@@ -1952,12 +2834,14 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   flex: 1 1 auto;
   min-height: 0;
 }
+
 .hxyrule-tasks-empty {
   padding: 18px 10px;
-  color: #8b95a3;
+  color: var(--hxyrule-muted, #8b95a3);
   text-align: center;
-  font-size: 12px;
+  font-size: var(--hxyrule-font-rail, 12px);
 }
+
 .hxyrule-tasks-item {
   position: relative;
   display: grid;
@@ -1966,13 +2850,15 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   margin: 0 0 4px;
   padding: 2px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--hxyrule-radius-sm, 6px);
   background: transparent;
   cursor: grab;
 }
+
 .hxyrule-tasks-item:last-child { margin-bottom: 0; }
 .hxyrule-tasks-item.is-live { cursor: default; }
 .hxyrule-tasks-item.is-dragging { opacity: 0.4; }
+
 .hxyrule-tasks-item.is-drop-before::before,
 .hxyrule-tasks-item.is-drop-after::after {
   content: "";
@@ -1981,13 +2867,15 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   right: 4px;
   height: 3px;
   border-radius: 2px;
-  background: #7eb7e6;
-  box-shadow: 0 0 0 1px rgb(126 183 230 / 35%);
+  background: var(--hxyrule-accent-hover, #4d94c2);
+  box-shadow: 0 0 0 1px rgba(63, 126, 168, 0.35);
   pointer-events: none;
   z-index: 2;
 }
+
 .hxyrule-tasks-item.is-drop-before::before { top: -3px; }
 .hxyrule-tasks-item.is-drop-after::after { bottom: -3px; }
+
 .hxyrule-tasks-item-select {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1996,81 +2884,81 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   min-width: 0;
   margin: 0;
   padding: 6px 8px;
-  border: 1px solid #555861;
-  border-radius: 6px;
-  background: #2a313c;
+  border: 1px solid var(--hxyrule-rail-line, #2c3640);
+  border-radius: var(--hxyrule-radius-sm, 6px);
+  background: var(--hxyrule-control, #2f3b46);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
+
 .hxyrule-tasks-item-select:hover {
-  border-color: #6e7a88;
-  background: #303845;
+  border-color: #3a4652;
+  background: var(--hxyrule-control-hover, #3d4b58);
 }
+
 .hxyrule-tasks-item.is-live .hxyrule-tasks-item-select { cursor: default; }
+
 .hxyrule-tasks-item-select.is-selected,
 .hxyrule-tasks-item.is-selected .hxyrule-tasks-item-select {
-  border-color: #8eb6d8;
-  background: #33485c;
-  box-shadow: inset 0 0 0 1px #8eb6d8;
+  border-color: var(--hxyrule-accent, #3f7ea8);
+  background: #2a4052;
+  box-shadow: inset 0 0 0 1px var(--hxyrule-accent, #3f7ea8);
 }
+
 .hxyrule-tasks-item:not([draggable="true"]) .hxyrule-tasks-item-select {
   cursor: pointer;
 }
+
 .hxyrule-tasks-item-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  color: #e8edf3;
+  font-size: var(--hxyrule-font-rail, 12px);
+  color: #fff;
 }
+
 .hxyrule-tasks-item-meta {
   flex-shrink: 0;
   white-space: nowrap;
   font-size: 11px;
-  color: #9aa5b3;
+  color: var(--hxyrule-muted, #8b95a3);
 }
+
 .hxyrule-tasks-item-meta.is-live-status {
-  color: #7ec8ff;
-  font-weight: 600;
+  color: var(--hxyrule-accent-hover, #4d94c2);
+  font-weight: 700;
 }
+
 .hxyrule-tasks-item-meta.is-paused-status {
   color: #e0b35a;
-  font-weight: 600;
+  font-weight: 700;
 }
+
 .hxyrule-tasks-item-meta.is-failed-status {
-  color: #ffb4b8;
-  font-weight: 600;
+  color: var(--hxyrule-danger-hover, #e08886);
+  font-weight: 700;
 }
-.hxyrule-tasks-dialog .hxyrule-dialog-actions {
+
+.hxyrule-tasks-dialog .hxyrule-dialog-actions,
+.hxyrule-playlist-dialog .hxyrule-dialog-actions {
   margin-top: 0;
 }
-.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn {
-  padding: 6px 12px;
-  border: 1px solid #6a6f79;
-  border-radius: 5px;
-  background: #4a4f59;
-  color: #f1f1f1;
-  height: auto;
-  min-height: 30px;
-  font-size: 14px;
-  font-weight: 600;
-}
-.hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn:hover {
-  background: #585e6a;
-}
+
 .hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn:disabled,
 .hxyrule-tasks-dialog .hxyrule-dialog-actions .hxyrule-btn:disabled:hover {
-  opacity: 0.45;
+  opacity: 0.42;
   cursor: not-allowed;
-  background: #4a4f59;
+  background: var(--hxyrule-control, #2f3b46);
 }
 
 @media (max-width: 560px) {
-  .hxyrule-tasks-dialog { width: min(100vw - 24px, 560px); }
+  .hxyrule-tasks-dialog,
+  .hxyrule-playlist-dialog { width: min(100vw - 24px, 560px); }
 }
 
 /* Site uses .thumb{padding:0 10px 20px} for row gaps — override that, not just margin. */
@@ -2094,10 +2982,70 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   display: none !important;
 }
 
-/* Thumbnail link only keeps the image — play target */
+/*
+ * Thumbnail link is the play target. Site (and compact) hover previews inject
+ * a <video> into a.th; if that video stays in normal flow the card grows, the
+ * float grid reflows, and mouseenter/leave thrash — vertical twitch on some
+ * cards (only those with a preview URL). Pin the poster as the height owner
+ * and overlay the preview absolutely with pointer-events none.
+ */
 .item.thumb.hxyrule-card > a.th {
   display: block;
-  margin: 0;
+  position: relative;
+  overflow: hidden;
+  margin: 0 !important;
+  padding: 0 !important;
+  max-width: 100%;
+  /* Match site .wrap_image padding-bottom:69% so pick sits flush under poster. */
+  aspect-ratio: 100 / 69;
+  height: auto !important;
+  border-radius: 8px 8px 0 0;
+  background: #1a222a;
+}
+
+/* Neutralize site .wrap_image { padding-bottom:69%; border-radius:10px } which
+ * otherwise leaves a dark strip between the rounded poster and the pick rail. */
+.item.thumb.hxyrule-card > a.th .img.wrap_image,
+.item.thumb.hxyrule-card > a.th .wrap_image {
+  position: absolute !important;
+  inset: 0 !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  overflow: hidden !important;
+  background: #000 !important;
+}
+
+.item.thumb.hxyrule-card > a.th img {
+  position: absolute !important;
+  inset: 0 !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  object-fit: cover !important;
+  border-radius: 0 !important;
+}
+
+.item.thumb.hxyrule-card > a.th video {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover !important;
+  z-index: 2;
+  pointer-events: none !important;
+  background: #000;
+}
+
+.item.thumb.hxyrule-card > a.th .time {
+  z-index: 3;
+  pointer-events: none;
 }
 
 /*
@@ -2108,10 +3056,11 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-pick {
   display: block;
   width: 100%;
-  margin: 1px 0 0;
+  margin: 0 !important;
   padding: 10px 10px 9px;
   border: 1px solid #3c464d;
-  border-radius: 8px;
+  /* Square top edge joins a.th; round only the bottom. */
+  border-radius: 0 0 8px 8px;
   cursor: pointer;
   background: #2c3b48;
   color: #8b9ba9;
@@ -2266,39 +3215,44 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 
 .hxyrule-modal {
   width: min(480px, calc(100vw - 24px));
-  background: #292f34;
-  border: 1px solid #424c55;
-  border-radius: 10px;
+  background:
+    linear-gradient(180deg, #26313a 0%, var(--hxyrule-surface, #1e2830) 100%);
+  border: 1px solid #3a4652;
+  border-radius: var(--hxyrule-radius, 8px);
   padding: 16px;
-  color: #cfd6dd;
+  color: var(--hxyrule-text, #e8ecf1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  font-size: var(--hxyrule-font, 14px);
+  font-weight: 600;
 }
 
 .hxyrule-modal--orphan {
   width: min(640px, calc(100vw - 24px));
-  font-size: 14px;
+  font-size: var(--hxyrule-font, 14px);
 }
 
 .hxyrule-modal--orphan h3 {
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .hxyrule-modal--orphan .hxyrule-playlist-option {
-  font-size: 14px;
+  font-size: var(--hxyrule-font, 14px);
 }
 
 .hxyrule-modal--orphan .hxyrule-modal__actions .hxyrule-btn {
-  font-size: 13px;
+  font-size: var(--hxyrule-font-label, 13px);
 }
 
 .hxyrule-modal--orphan .hxyrule-orphan-open {
-  font-size: 13px !important;
+  font-size: var(--hxyrule-font-label, 13px) !important;
 }
 
 .hxyrule-modal-hint {
   margin: 0 0 10px;
-  font-size: 12px;
-  color: #8b9ba9;
+  font-size: var(--hxyrule-font-rail, 12px);
+  color: var(--hxyrule-muted, #8b95a3);
   line-height: 1.4;
+  font-weight: 600;
 }
 
 .hxyrule-orphan-actions {
@@ -2311,7 +3265,7 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   min-height: 28px;
   height: 28px;
   padding: 4px 8px;
-  border-radius: 5px;
+  border-radius: var(--hxyrule-radius-sm, 6px);
 }
 
 .hxyrule-orphan-list {
@@ -2356,30 +3310,35 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 }
 
 .hxyrule-modal h3 {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   color: #fff;
 }
 
 .hxyrule-modal label {
   display: block;
   margin: 8px 0 4px;
-  font-size: 13px;
-  color: #8b9ba9;
+  font-size: var(--hxyrule-font-label, 13px);
+  color: var(--hxyrule-muted, #8b95a3);
+  font-weight: 600;
 }
 
 .hxyrule-modal input {
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid #424c55;
-  border-radius: 8px;
-  background: #212b31;
+  border: 1px solid var(--hxyrule-rail-line, #2c3640);
+  border-radius: var(--hxyrule-radius, 8px);
+  background: #171e24;
   color: #fff;
+  font: inherit;
+  font-weight: 600;
 }
 
 /* Gray ±10 defaults; typed values stay white via `color` above. */
 .hxyrule-modal input::placeholder {
-  color: #8b9ba9;
+  color: rgba(255, 255, 255, 0.4);
   opacity: 1;
 }
 
@@ -2392,19 +3351,43 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 }
 
 .hxyrule-modal__actions .hxyrule-btn--primary {
-  background: #424c55;
+  background: var(--hxyrule-primary, #3f9a6f);
 }
 
 .hxyrule-modal__actions .hxyrule-btn--primary:hover {
-  background: #4d5b68;
+  background: var(--hxyrule-primary-hover, #4eb082);
 }
 
-.hxyrule-modal__actions .hxyrule-btn--warn {
-  background: #424c55;
+.hxyrule-modal__actions .hxyrule-btn--warn,
+.hxyrule-modal__actions .hxyrule-btn--danger {
+  background: var(--hxyrule-danger, #ce5f5d);
 }
 
-.hxyrule-modal__actions .hxyrule-btn--warn:hover {
-  background: #4d5b68;
+.hxyrule-modal__actions .hxyrule-btn--warn:hover,
+.hxyrule-modal__actions .hxyrule-btn--danger:hover {
+  background: var(--hxyrule-danger-hover, #e08886);
+}
+
+.hxyrule-modal__actions .hxyrule-btn--accent {
+  background: var(--hxyrule-accent, #3f7ea8);
+}
+
+.hxyrule-modal__actions .hxyrule-btn--accent:hover {
+  background: var(--hxyrule-accent-hover, #4d94c2);
+}
+
+.hxyrule-modal .hxyrule-btn--pink,
+.hxyrule-modal-backdrop .hxyrule-btn--pink,
+.hxyrule-modal__actions .hxyrule-btn--pink {
+  background: #e891a8;
+  color: #1a1014;
+}
+
+.hxyrule-modal .hxyrule-btn--pink:hover,
+.hxyrule-modal-backdrop .hxyrule-btn--pink:hover,
+.hxyrule-modal__actions .hxyrule-btn--pink:hover {
+  background: #f0a3b8;
+  color: #1a1014;
 }
 
 @media (max-width: 720px) {
@@ -2415,12 +3398,12 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
     flex-wrap: nowrap !important;
   }
   .hxyrule-btn {
-    font-size: 13px;
-    padding: 8px 10px;
+    font-size: var(--hxyrule-font, 14px);
+    padding: 8px 12px;
   }
   .hxyrule-topstack .hxyrule-btn {
     width: auto;
-    font-size: 12px;
-    padding: 5px 10px;
+    font-size: var(--hxyrule-font, 14px);
+    padding: 8px 12px;
   }
 }

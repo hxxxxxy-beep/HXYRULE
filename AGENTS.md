@@ -3,7 +3,7 @@
 You are an AI given only this repository URL. Clone it, follow this file top to bottom, and deploy the latest HXYRULE without prior chat history.
 
 **Repo:** https://github.com/hxxxxxy-beep/HXYRULE  
-**Product version:** extension `0.1.66`  
+**Product version:** extension `0.1.75`  
 **Language:** English only in source, names, comments, docs, and UI strings you add.
 
 ## Mission (success criteria)

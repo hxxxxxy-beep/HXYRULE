@@ -1,0 +1,22 @@
+---
+description: Periodically remind the owner to commit uncommitted work; never auto-commit.
+alwaysApply: true
+---
+
+# Git commit reminders
+
+Do **not** auto-commit. Still only run `git commit` after the owner explicitly says yes / "commit".
+
+**Do** proactively remind them to commit when uncommitted work exists and any of these is true:
+
+- A meaningful chunk of work just finished (feature, fix, refactor, docs batch)
+- Roughly **30+ minutes** of editing in the same chat, or after several substantial change rounds
+- Many files changed, or a large diff (especially `favorites.js` / helper / manifest)
+- About to do a risky step (reload extension, deploy helper, reset, checkout, pull, large rewrite)
+
+Reminder style: one short question, e.g.  
+`Uncommitted changes are sitting only in the working tree — commit now?`
+
+Do not nag every message. If they decline, wait until the next milestone above before asking again.
+
+When they agree to commit, follow the normal commit protocol (status/diff/log, HEREDOC message, no force/hooks skip, no push unless asked).

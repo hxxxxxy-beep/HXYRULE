@@ -36,10 +36,10 @@ Re-import `~/Library/Application Support/HXYRULE/extension-config.json`.
 
 ## Filters empty or wrong
 
-- **Show matches** refreshes disk/index only when missing, dirty after Edit, or list count drifts — it does not auto-scan on every new favorite. Use **Scan local** if you changed files outside Download/Prune.
-- On a playlist page, **Favorited / Unfavorited** builds/refreshes the Favorites index on Show matches if missing or dirty (or Build/Refresh on My Favorites). Playlist **Build index** only indexes that playlist.
-- Changing Match chips after Show matches clears the frozen View — click Show matches again. Edit/download that changes stores also clears View.
-- Run **Build/Refresh index** on **every** site playlist before In playlist / Not in playlist on Favorites — incomplete indexes block the filter and list the missing playlists. After Edit, indexes are patched when possible; if a playlist was never indexed, Build it then retry.
+- **Show matches** refreshes disk/index only when missing, dirty after Edit, or list count drifts — native hearts and extension Edit patch indexes without Rebuild. Use **Scan local** if you changed files outside Download/Prune.
+- On a playlist page, **Favorited / Unfavorited** builds/refreshes the Favorites index on Show matches if missing or dirty (or Build/Rebuild on My Favorites). Playlist **Build index** only indexes that playlist.
+- Changing Match chips or Reset after Compact / Show matches refreshes that View in place. Edit/download that changes stores still clears View — click Compact / Show matches again.
+- Run **Build index** on **every** site playlist before In playlist / Not in playlist on Favorites — incomplete indexes block the filter and list the missing playlists. After Edit or native heart, indexes are patched when possible; if a playlist was never indexed, Build it then retry. Use **Rebuild index** only when the snapshot drifted from another device or a missed hook.
 - **Prune local** is Favorites-only (compares disk to the Favorites index) and refreshes that index first when dirty or drifted.
 
 ## Playlist spacing / toolbar height

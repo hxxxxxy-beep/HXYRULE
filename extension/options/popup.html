@@ -3,11 +3,66 @@
 <head>
   <meta charset="utf-8" />
   <style>
-    body { font: 13px/1.4 "Avenir Next", sans-serif; margin: 12px; width: 260px; color: #2c2416; background: #f8f2e6; }
-    h1 { font-size: 16px; margin: 0 0 8px; color: #7a4e00; }
-    button { width: 100%; margin: 4px 0; padding: 8px; border: 1px solid #7a4e00; background: #7a4e00; color: #fff; cursor: pointer; }
-    .secondary { background: #fff; color: #7a4e00; }
-    #st { margin-top: 8px; font-size: 12px; }
+    :root {
+      --hxyrule-text: #e8ecf1;
+      --hxyrule-muted: #8b95a3;
+      --hxyrule-surface: #1e2830;
+      --hxyrule-control: #2f3b46;
+      --hxyrule-control-hover: #3d4b58;
+      --hxyrule-primary: #3f9a6f;
+      --hxyrule-primary-hover: #4eb082;
+      --hxyrule-accent: #3f7ea8;
+      --hxyrule-accent-hover: #4d94c2;
+      --hxyrule-radius: 8px;
+      --hxyrule-radius-sm: 6px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      width: 280px;
+      padding: 14px;
+      font: 600 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--hxyrule-text);
+      background: linear-gradient(180deg, #26313a 0%, var(--hxyrule-surface) 100%);
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: #fff;
+    }
+    button {
+      display: block;
+      width: 100%;
+      margin: 0 0 8px;
+      padding: 10px 12px;
+      border: none;
+      border-radius: var(--hxyrule-radius-sm);
+      background: var(--hxyrule-primary);
+      color: #fff;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.12s ease;
+    }
+    button:hover { background: var(--hxyrule-primary-hover); }
+    button.secondary {
+      background: var(--hxyrule-control);
+    }
+    button.secondary:hover { background: var(--hxyrule-control-hover); }
+    #st {
+      margin-top: 4px;
+      padding: 8px 10px;
+      border: 1px solid #2c3640;
+      border-radius: var(--hxyrule-radius-sm);
+      background: #171e24;
+      color: var(--hxyrule-muted);
+      font-size: 12px;
+      min-height: 1.4em;
+    }
+    #st.ok { color: var(--hxyrule-primary-hover); }
+    #st.bad { color: #e08886; }
   </style>
 </head>
 <body>

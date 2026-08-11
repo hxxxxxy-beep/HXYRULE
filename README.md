@@ -2,7 +2,7 @@
 
 Personal Chrome MV3 extension + macOS Helper for [Rule34Video](https://rule34video.com/) favorites and playlists: local scan, local-first playback (IINA), queued downloads (concurrency 6), cross-page selection, filters, indexes, and site playlist moves. Does not change the site server. Cookies and local paths never leave your machine.
 
-**Version:** extension `0.1.66`
+**Version:** extension `0.1.75`
 
 ## New Mac / new AI
 
@@ -55,9 +55,9 @@ Disable Pagetual infinite scroll on favorites / playlist pages.
 ## UI (favorites and playlist share a 3-row control bar)
 
 1. **Match · View · Select** — dual toggles · Duration · Show matches / Show all · This page · Page range · All matches · Clear
-2. **Sync** Scan local · **Queue** Download / Stop / Wake queue / Tasks · **Index** Build/Refresh · **Renumber** (Favorites only) · **Edit** Add to playlist · Unfavorite / Remove from list · Prune local (Favorites only). Playlist pages also show **Add to Favorites**. **Tasks** opens a live download-queue manager (select / clear, delete, pause/resume selected in-flight or paused rows so the next pending takes freed slots, drag-reorder).
+2. **Sync** Scan local · **Queue** Download / Stop / Wake queue / Tasks · **Index** Build / Rebuild · **Renumber** (Favorites only) · **Edit** Add to playlist · Unfavorite / Remove from list · Prune local (Favorites only). Playlist pages also show **Add to Favorites**. **Tasks** opens a live download-queue manager (select / clear, delete, pause/resume selected in-flight or paused rows so the next pending takes freed slots, drag-reorder).
 
-Progress labels keep final counts: `Renumber (100/100)`, `Refresh index (100/100)`, `Indexing 3/100`.
+Progress labels keep final counts: `Renumber (100/100)`, `Rebuild index (100/100)`, `Indexing 3/100`.
 
 ### Filters (dual toggles; both on = All)
 
@@ -70,7 +70,7 @@ Progress labels keep final counts: `Renumber (100/100)`, `Refresh index (100/100
 | Playlist | **Favorited / Unfavorited** | Favorites index (`hxyruleFavIndex`) |
 | Favorites | **In playlist / Not in playlist** | Union of all playlist indexes (`PLAYLIST_MEMBERSHIP_GET`) |
 
-**Match → View → Select:** Show matches freezes View (grays non-matches). **Compact matches** hides non-matches and shows only matches in index order as full cards (paged; match pager under the grid, separate from the toolbar page bar; needs Refresh index for thumbnails). Chip edits or Edit/download store changes clear View. **All matches** uses the frozen View when active; with default Match (both dual-toggles on, no Duration) it selects the full list index.
+**Match → View → Select:** Show matches freezes View (grays non-matches). **Compact** is the default View: with default Match it lists the full index as full cards (paged; match pager replaces the native bar in toolbar Pages; needs Build index once for thumbnails). Compact sort on Favorites includes **Favorited** (collection order); playlist pages omit it and keep Uploaded / Duration / Views / Rating. Chip edits or Reset refresh Compact / Show matches in place; Edit/download store changes clear View. Native hearts and extension Edit patch indexes automatically; **Rebuild index** is an escape hatch. **All matches** uses the active View; with default Match (both dual-toggles on, no Duration) it selects the full list index. Match / View / Select / collapse / Compact sort are remembered per Favorites or playlist entry across refresh.
 
 ### Card behavior
 
@@ -80,7 +80,7 @@ Progress labels keep final counts: `Renumber (100/100)`, `Refresh index (100/100
 
 ### Site playlist modal
 
-Option format: `TITLE (id): N videos`. **Move (keep favorites)** vs **Move (remove from favorites)**. Reject playlist id `0`.
+Option format: `TITLE: N videos` (no playlist id). **Move (keep favorites)** vs **Move (remove from favorites)**. Reject playlist id `0`.
 
 ## Site facts
 

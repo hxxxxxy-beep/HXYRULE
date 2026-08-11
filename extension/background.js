@@ -1034,7 +1034,10 @@ async function getPlaylistMembership() {
 function parseDurationSec(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
-  const parts = raw.split(':').map((p) => Number(p));
+  // Prefer an explicit clock token so icon / label noise in .time does not fail parse.
+  const clock = raw.match(/(\d+:\d{1,2}(?::\d{1,2})?)/);
+  const source = clock ? clock[1] : raw;
+  const parts = source.split(':').map((p) => Number(p));
   if (!parts.length || parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
   if (parts.length === 2) return Math.round(parts[0] * 60 + parts[1]);
   if (parts.length === 3) return Math.round(parts[0] * 3600 + parts[1] * 60 + parts[2]);
@@ -1419,6 +1422,126 @@ async function addVideosToMyFavourites(videoIds) {
   return { total: ids.length, ok, failed, errors, method: 'add_to_favourites' };
 }
 
+/** Move selected Favorites videos into a playlist (leaves My Favorites). */
+async function moveVideosToSitePlaylist(playlistId, videoIds) {
+  const pid = String(playlistId || '').trim();
+  if (!isValidPlaylistId(pid)) throw new Error('invalid playlist id');
+  const ids = [
+    ...new Set((videoIds || []).map((v) => String(v).trim()).filter((v) => /^[1-9]\d*$/.test(v))),
+  ];
+  if (!ids.length) throw new Error('no video ids');
+  const bases = [
+    'https://rule34video.com/my/favourites/videos/',
+    'https://rule34video.com/my/favourites/videos',
+  ];
+  const encodings = ['brackets', 'plain'];
+  let lastDetail = 'no attempt';
+  for (const base of bases) {
+    for (const enc of encodings) {
+      const q = new URLSearchParams({ mode: 'async', format: 'json' });
+      q.set('function', 'get_block');
+      q.set('block_id', 'list_videos_my_favourite_videos');
+      q.set('move_to_playlist_id', pid);
+      ids.forEach((id) => {
+        if (enc === 'brackets') q.append('delete[]', id);
+        else q.append('delete', id);
+      });
+      const url = `${base}${base.includes('?') ? '&' : '?'}${q.toString()}`;
+      try {
+        const res = await siteFetch(url, {
+          headers: { Accept: 'application/json, text/javascript, */*;q=0.1' },
+        });
+        const parsed = await parseJsonStatus(res);
+        if (parsed.ok) return { ok: true, detail: 'success', deleteCount: ids.length };
+        lastDetail = parsed.detail || `HTTP ${res.status}`;
+      } catch (err) {
+        lastDetail = String(err.message || err);
+      }
+    }
+  }
+  return { ok: false, detail: lastDetail, deleteCount: ids.length };
+}
+
+function normalizeJobItems(rawItems, videoIds) {
+  const out = {};
+  const src = rawItems && typeof rawItems === 'object' ? rawItems : {};
+  (videoIds || []).forEach((id) => {
+    const key = String(id);
+    const hit = src[key] || src[Number(key)] || {};
+    out[key] = {
+      videoId: key,
+      title: String(hit.title || key),
+      detailUrl: String(hit.detailUrl || `https://rule34video.com/video/${key}/`),
+      favoritePage: Number(hit.favoritePage) || 0,
+      cardIndex: Number.isInteger(hit.cardIndex) ? hit.cardIndex : 0,
+      durationSec:
+        hit.durationSec == null || hit.durationSec === ''
+          ? null
+          : Number(hit.durationSec),
+    };
+  });
+  return out;
+}
+
+const JOB_ORDINAL_PREFIX_RE = /^(\d+)\s*——\s*/;
+
+function ordinalFromJobTitle(title) {
+  const m = String(title || '').match(JOB_ORDINAL_PREFIX_RE);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Sort by Helper Renumber seq ascending (1…N). Chunks lookup (max 500/call). */
+async function sortVideoIdsByOrdinalAsc(ids, items = {}) {
+  const list = [
+    ...new Set((ids || []).map((v) => String(v).trim()).filter((v) => /^[1-9]\d*$/.test(v))),
+  ];
+  if (list.length <= 1) return list;
+  const map = {};
+  const CHUNK = 500;
+  for (let i = 0; i < list.length; i += CHUNK) {
+    const chunk = list.slice(i, i + CHUNK);
+    try {
+      const looked = await helperFetch('/ordinals/lookup', {
+        method: 'POST',
+        body: { videoIds: chunk },
+      });
+      Object.assign(map, looked?.ordinals || {});
+    } catch (_) {
+      /* Helper optional; title prefix fallback below */
+    }
+  }
+  const scored = list.map((id, i) => {
+    let seq = map[id] != null ? Number(map[id]) : NaN;
+    if (!Number.isFinite(seq) || seq < 1) {
+      const hit = items[id] || items[Number(id)] || {};
+      seq = ordinalFromJobTitle(hit.title) || Infinity;
+    }
+    return { id, seq, i };
+  });
+  scored.sort((a, b) => a.seq - b.seq || a.i - b.i);
+  return scored.map((x) => x.id);
+}
+
+function playlistAddJobResult(job, { stopped = false } = {}) {
+  return {
+    mode: job.mode || 'save',
+    playlistIds: Array.isArray(job.playlistIds) ? job.playlistIds.slice() : [],
+    videoIds: Array.isArray(job.videoIds) ? job.videoIds.slice() : [],
+    ok: Number(job.ok) || 0,
+    failed: Number(job.failed) || 0,
+    done: Number(job.done) || 0,
+    total: Number(job.total) || 0,
+    okIdsByPlaylist: { ...(job.okIdsByPlaylist || {}) },
+    moveOkIds: Array.isArray(job.moveOkIds) ? job.moveOkIds.slice() : [],
+    errors: Array.isArray(job.errors) ? job.errors.slice(0, 8) : [],
+    items: job.items && typeof job.items === 'object' ? job.items : {},
+    sourceScope: String(job.sourceScope || ''),
+    stopped: !!stopped,
+  };
+}
+
 /**
  * MAIN-world helpers must be self-contained: chrome.scripting.executeScript
  * serializes only the function body, not sibling helpers.
@@ -1429,7 +1552,7 @@ async function addVideosToMyFavourites(videoIds) {
 function pageRebindAjaxPopups() {
   const $ = window.jQuery || window.$;
   if (!$ || typeof $.fancybox !== 'function') return { ok: false, reason: 'fancybox missing' };
-  const optsFor = (el) => ({
+  const opts = {
     topRatio: 0,
     openEffect: 'none',
     openSpeed: 0,
@@ -1439,17 +1562,76 @@ function pageRebindAjaxPopups() {
     prevSpeed: 0,
     nextEffect: 'none',
     nextSpeed: 0,
-  });
+  };
+  const openAjax = (ajaxHref) => {
+    if (!ajaxHref) return;
+    $.fancybox([{ href: ajaxHref, type: 'ajax' }], opts);
+  };
   document.querySelectorAll('[data-fancybox="ajax"]').forEach((el) => {
     el.onclick = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const ajaxHref = el.getAttribute('data-href') || el.getAttribute('href');
-      if (!ajaxHref) return;
-      $.fancybox([{ href: ajaxHref, type: 'ajax' }], optsFor(el));
+      openAjax(el.getAttribute('data-href') || el.getAttribute('href'));
     };
   });
-  return { ok: true, count: document.querySelectorAll('[data-fancybox="ajax"]').length };
+  // Compact clones lose KVS .js-open-popup handlers. Wire thumb links in the
+  // compact host so a plain click opens Fancybox without a prior Ctrl/Cmd+click.
+  let compactBound = 0;
+  document
+    .querySelectorAll(
+      '.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact="1"] a.th, ' +
+        '.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact="1"] a[href*="/video/"]',
+    )
+    .forEach((el) => {
+      if (el.dataset.hxyrulePopupBound === '1') return;
+      el.dataset.hxyrulePopupBound = '1';
+      el.addEventListener(
+        'click',
+        (event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          if (event.button != null && event.button !== 0) return;
+          const item = el.closest('.item.thumb');
+          if (!item) return;
+          const id =
+            (item.className.match(/\bvideo_(\d+)\b/) || [])[1] ||
+            (el.getAttribute('href') || '').match(/\/video\/(\d+)\//)?.[1] ||
+            '';
+          const clickEl =
+            item.querySelector('a.js-click[data-fancybox="ajax"], [data-fancybox="ajax"]') ||
+            null;
+          let ajaxHref =
+            clickEl?.getAttribute('data-href') || clickEl?.getAttribute('href') || '';
+          if (
+            id &&
+            ajaxHref &&
+            !ajaxHref.includes(`/popup-video/${id}/`) &&
+            !ajaxHref.includes(`/video/${id}/`)
+          ) {
+            ajaxHref = '';
+          }
+          if (!ajaxHref && id) {
+            ajaxHref = `https://rule34video.com/popup-video/${id}/?popup_id=1`;
+          }
+          if (!ajaxHref) return;
+          event.preventDefault();
+          event.stopPropagation();
+          try {
+            const pageHref = el.getAttribute('href') || '';
+            if (pageHref) window.history.pushState('page2', 'Title', pageHref);
+          } catch (_) {
+            /* ignore */
+          }
+          openAjax(ajaxHref);
+        },
+        true,
+      );
+      compactBound += 1;
+    });
+  return {
+    ok: true,
+    count: document.querySelectorAll('[data-fancybox="ajax"]').length,
+    compactBound,
+  };
 }
 
 /**
@@ -1542,6 +1724,29 @@ function pageReinitThumbLazyload() {
   return { ok: true, bound, usedPlugin };
 }
 
+/** Open an arbitrary Fancybox ajax URL (e.g. create-playlist). */
+function pageOpenAjaxHref(href) {
+  const ajaxHref = String(href || '').trim();
+  if (!ajaxHref) return { ok: false, reason: 'missing href' };
+  const $ = window.jQuery || window.$;
+  if (!$ || typeof $.fancybox !== 'function') {
+    return { ok: false, reason: 'fancybox missing' };
+  }
+  const opts = {
+    topRatio: 0,
+    openEffect: 'none',
+    openSpeed: 0,
+    closeEffect: 'none',
+    closeSpeed: 0,
+    prevEffect: 'none',
+    prevSpeed: 0,
+    nextEffect: 'none',
+    nextSpeed: 0,
+  };
+  $.fancybox([{ href: ajaxHref, type: 'ajax' }], opts);
+  return { ok: true, method: 'fancybox-ajax' };
+}
+
 /** Stop media + close Fancybox so exit cannot leave a ghost audio stream. */
 function pageCloseNativePopup() {
   const $ = window.jQuery || window.$;
@@ -1580,7 +1785,6 @@ function pageCloseNativePopup() {
 }
 
 function pageOpenNativePopup(href, videoId) {
-  const $ = window.jQuery || window.$;
   const id = String(videoId || '');
   const wantHref = String(href || '');
   const popupFallback = id ? `https://rule34video.com/popup-video/${id}/?popup_id=1` : '';
@@ -1595,77 +1799,103 @@ function pageOpenNativePopup(href, videoId) {
     nextEffect: 'none',
     nextSpeed: 0,
   };
-  // Prefer compact-match cards: native favorites stay in DOM (hidden) and would
-  // otherwise win querySelectorAll / stale fancybox data-href from sample clones.
-  const compactHost = document.querySelector('.hxyrule-compact-thumbs');
-  const roots = compactHost ? [compactHost, document] : [document];
-  let item = null;
-  for (const root of roots) {
-    const items = Array.from(root.querySelectorAll('.item.thumb'));
-    item =
-      items.find((el) => {
-        if (
-          id &&
-          (el.classList.contains(`video_${id}`) || el.querySelector(`[href*="/video/${id}/"]`))
-        ) {
-          return true;
-        }
-        const a = el.querySelector('a.th.js-open-popup, a.th');
-        if (!a) return false;
-        const h = a.getAttribute('href') || '';
-        return (
-          (wantHref && (h === wantHref || a.href === wantHref)) ||
-          (id && (h.includes(`/video/${id}/`) || a.href.includes(`/video/${id}/`)))
-        );
-      }) || null;
-    if (item) break;
-  }
 
-  const clickEl =
-    item?.querySelector('a.js-click[data-fancybox="ajax"], [data-fancybox="ajax"]') || null;
-  const openEl = item?.querySelector('a.th.js-open-popup, a.th') || null;
-  const pageHref = openEl?.getAttribute('href') || wantHref || '';
-  let ajaxHref =
-    clickEl?.getAttribute('data-href') || clickEl?.getAttribute('href') || '';
-  // Compact sample clones often keep the donor card's popup URL — ignore mismatch.
-  if (
-    id &&
-    ajaxHref &&
-    !ajaxHref.includes(`/popup-video/${id}/`) &&
-    !ajaxHref.includes(`/video/${id}/`)
-  ) {
-    ajaxHref = '';
-  }
-  if (!ajaxHref) ajaxHref = popupFallback;
-
-  if (pageHref) {
-    try {
-      window.history.pushState('page2', 'Title', pageHref);
-    } catch (_) {
-      /* ignore */
+  const resolve = () => {
+    const $ = window.jQuery || window.$;
+    // Prefer compact-match cards: native favorites stay in DOM (hidden) and would
+    // otherwise win querySelectorAll / stale fancybox data-href from sample clones.
+    const compactHost = document.querySelector('.hxyrule-compact-thumbs');
+    const roots = compactHost ? [compactHost, document] : [document];
+    let item = null;
+    for (const root of roots) {
+      const items = Array.from(root.querySelectorAll('.item.thumb'));
+      item =
+        items.find((el) => {
+          if (
+            id &&
+            (el.classList.contains(`video_${id}`) || el.querySelector(`[href*="/video/${id}/"]`))
+          ) {
+            return true;
+          }
+          const a = el.querySelector('a.th.js-open-popup, a.th');
+          if (!a) return false;
+          const h = a.getAttribute('href') || '';
+          return (
+            (wantHref && (h === wantHref || a.href === wantHref)) ||
+            (id && (h.includes(`/video/${id}/`) || a.href.includes(`/video/${id}/`)))
+          );
+        }) || null;
+      if (item) break;
     }
-  }
 
-  if (ajaxHref && $ && typeof $.fancybox === 'function') {
-    // Rebind siblings so later plain clicks also work after our HTML replace.
-    document.querySelectorAll('[data-fancybox="ajax"]').forEach((el) => {
-      el.onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const hrefAjax = el.getAttribute('data-href') || el.getAttribute('href');
-        if (!hrefAjax) return;
-        $.fancybox([{ href: hrefAjax, type: 'ajax' }], opts);
-      };
-    });
-    $.fancybox([{ href: ajaxHref, type: 'ajax' }], opts);
-    return { ok: true, method: 'fancybox-ajax' };
-  }
+    const clickEl =
+      item?.querySelector('a.js-click[data-fancybox="ajax"], [data-fancybox="ajax"]') || null;
+    const openEl = item?.querySelector('a.th.js-open-popup, a.th') || null;
+    const pageHref = openEl?.getAttribute('href') || wantHref || '';
+    let ajaxHref =
+      clickEl?.getAttribute('data-href') || clickEl?.getAttribute('href') || '';
+    // Compact sample clones often keep the donor card's popup URL — ignore mismatch.
+    if (
+      id &&
+      ajaxHref &&
+      !ajaxHref.includes(`/popup-video/${id}/`) &&
+      !ajaxHref.includes(`/video/${id}/`)
+    ) {
+      ajaxHref = '';
+    }
+    if (!ajaxHref) ajaxHref = popupFallback;
 
-  if (openEl) {
-    openEl.click();
-    return { ok: true, method: 'open-popup-click' };
-  }
-  return { ok: false, reason: 'popup target missing' };
+    if (pageHref) {
+      try {
+        window.history.pushState('page2', 'Title', pageHref);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
+    if (ajaxHref && $ && typeof $.fancybox === 'function') {
+      // Rebind siblings so later plain clicks also work after our HTML replace.
+      document.querySelectorAll('[data-fancybox="ajax"]').forEach((el) => {
+        el.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const hrefAjax = el.getAttribute('data-href') || el.getAttribute('href');
+          if (!hrefAjax) return;
+          $.fancybox([{ href: hrefAjax, type: 'ajax' }], opts);
+        };
+      });
+      $.fancybox([{ href: ajaxHref, type: 'ajax' }], opts);
+      return { ok: true, method: 'fancybox-ajax' };
+    }
+
+    if (!$ || typeof $?.fancybox !== 'function') {
+      return { ok: false, reason: 'fancybox missing', retry: true };
+    }
+
+    if (openEl) {
+      openEl.click();
+      return { ok: true, method: 'open-popup-click' };
+    }
+    return { ok: false, reason: 'popup target missing' };
+  };
+
+  const first = resolve();
+  if (first.ok || !first.retry) return first;
+
+  // Compact can finish before site jQuery/Fancybox boots after a hard refresh.
+  return new Promise((resolveDone) => {
+    let tries = 0;
+    const tick = () => {
+      tries += 1;
+      const next = resolve();
+      if (next.ok || !next.retry || tries >= 20) {
+        resolveDone(next.ok ? next : { ok: false, reason: next.reason || 'fancybox missing' });
+        return;
+      }
+      setTimeout(tick, 100);
+    };
+    setTimeout(tick, 100);
+  });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1703,6 +1933,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           world: 'MAIN',
           func: pageOpenNativePopup,
           args: [href, videoId],
+        });
+        return result?.result || { ok: false };
+      }
+      case 'PAGE_OPEN_AJAX': {
+        const tabId = sender.tab?.id;
+        if (!tabId) return { ok: false, reason: 'no tab' };
+        const href = String(message.href || '').trim();
+        if (!href) return { ok: false, reason: 'missing href' };
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: 'MAIN',
+          func: pageOpenAjaxHref,
+          args: [href],
         });
         return result?.result || { ok: false };
       }
@@ -1922,12 +2165,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return await startIndexJob(message || {});
       case 'INDEX_JOB_STOP':
         return await stopIndexJob();
+      case 'SEX_CLASSIFY_PAGE1':
+        return await classifySexGroupsPage1(message || {});
       case 'RENUMBER_JOB_STATUS':
         return await getRenumberJobStatus();
       case 'RENUMBER_JOB_START':
         return await startRenumberJob(message || {});
       case 'RENUMBER_JOB_STOP':
         return await stopRenumberJob();
+      case 'PLAYLIST_ADD_JOB_STATUS':
+        return await getPlaylistAddJobStatus();
+      case 'PLAYLIST_ADD_JOB_START':
+        return await startPlaylistAddJob(message || {});
+      case 'PLAYLIST_ADD_JOB_STOP':
+        return await stopPlaylistAddJob();
+      case 'FAV_ADD_JOB_STATUS':
+        return await getFavAddJobStatus();
+      case 'FAV_ADD_JOB_START':
+        return await startFavAddJob(message || {});
+      case 'FAV_ADD_JOB_STOP':
+        return await stopFavAddJob();
       case 'PLAYLIST_MEMBERSHIP_GET':
         return await getPlaylistMembership();
       case 'SITE_PLAYLIST_LIST':
@@ -1950,6 +2207,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           fromKey: message.fromKey,
           includeHtml: !!message.includeHtml,
         });
+      case 'UPLOAD_META_LOOKUP':
+        return await fetchUploadMetaForIds(message.videoIds || []);
       case 'START_QUEUE_WORKER':
         runQueueWorker();
         return { ok: true };
@@ -1982,10 +2241,104 @@ function playlistFromKeys(blockId, preferredKey = '') {
   return keys;
 }
 
+function isRateLimitedResponse(status, text) {
+  if (Number(status) === 429) return true;
+  const body = String(text || '');
+  if (/item[\s_-]+thumb|name=["']delete\[]["']/i.test(body)) return false;
+  return /ddos-guard|too many requests|error code:\s*429/i.test(body);
+}
+
+/**
+ * Site fetch with DDoS-Guard 429 backoff. Index crawl + sex enrich otherwise
+ * die on ~1690-byte empty pages after tens of favorites pages.
+ *
+ * preferSameOrigin: for sex-filter crawls, fetch from an open rule34video tab so
+ * the Lax category_group_id cookie is actually sent (SW cross-site fetch often
+ * drops it; favorites then return the unfiltered list and Tag sex dual-labels
+ * everything as futa,straight).
+ */
+async function fetchSiteText(url, { retries = 6, preferSameOrigin = false } = {}) {
+  let lastLen = 0;
+  let lastStatus = 0;
+  const maxRetries = Math.max(0, Number(retries) || 0);
+  let sameOriginTabId = null;
+  if (preferSameOrigin) {
+    const tab = await findRule34VideoTab();
+    sameOriginTabId = tab?.id ?? null;
+  }
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    let status = 0;
+    let text = '';
+    let finalUrl = url;
+    if (sameOriginTabId != null) {
+      try {
+        const page = await fetchSiteTextInTab(sameOriginTabId, url);
+        status = Number(page.status) || 0;
+        text = page.text || '';
+        finalUrl = page.url || url;
+      } catch (err) {
+        // Tab closed / restricted — fall back to SW fetch for this attempt.
+        sameOriginTabId = null;
+        const res = await fetch(url, {
+          credentials: 'include',
+          redirect: 'follow',
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            Accept: 'text/html, */*;q=0.1',
+          },
+        });
+        text = await res.text();
+        status = res.status;
+        finalUrl = res.url || url;
+      }
+    } else {
+      const res = await fetch(url, {
+        credentials: 'include',
+        redirect: 'follow',
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+          Accept: 'text/html, */*;q=0.1',
+        },
+      });
+      text = await res.text();
+      status = res.status;
+      finalUrl = res.url || url;
+    }
+    lastLen = text.length;
+    lastStatus = status;
+    if (isRateLimitedResponse(status, text)) {
+      if (attempt >= maxRetries) {
+        const err = new Error(
+          `rate limited by site (HTTP ${status || 429}, ${lastLen} bytes) — wait ~30s and Rebuild index again`,
+        );
+        err.code = 'RATE_LIMITED';
+        throw err;
+      }
+      const waitMs = Math.min(20_000, 2000 * 2 ** attempt);
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+    // Synthesize a Response-like object for callers that only read .ok / .status / .url.
+    const res = {
+      ok: status >= 200 && status < 300,
+      status,
+      url: finalUrl,
+    };
+    return { res, text, url: finalUrl };
+  }
+  throw new Error(`fetch failed (HTTP ${lastStatus}, ${lastLen} bytes)`);
+}
+
 async function fetchPlaylistPage(
   playlistId,
   page,
-  { blockId = '', fromKey = '', includeHtml = false } = {},
+  {
+    blockId = '',
+    fromKey = '',
+    includeHtml = false,
+    sexGroupId = '',
+    rateLimitRetries = 6,
+  } = {},
 ) {
   const pid = String(playlistId || '').trim();
   if (!/^[1-9]\d*$/.test(pid)) throw new Error('invalid playlist id');
@@ -1993,11 +2346,11 @@ async function fetchPlaylistPage(
   if (!Number.isInteger(pageNum) || pageNum < 1) throw new Error('invalid page');
   const primaryBlock =
     String(blockId || '').trim() || 'list_videos_common_videos_list';
-  const blocks = [
-    primaryBlock,
-    'list_videos_common_videos_list',
-    'list_videos_my_favourite_videos',
-  ].filter((b, i, arr) => b && arr.indexOf(b) === i);
+  // Never fall back to Favorites block — that fed Favorites pager HTML into
+  // playlist indexes (1/10 → a/a+1 on a 12-video list).
+  const blocks = [primaryBlock, 'list_videos_common_videos_list'].filter(
+    (b, i, arr) => b && !/favourites?|favorite/i.test(b) && arr.indexOf(b) === i,
+  );
   const fromVals = [pageNum];
   if (pageNum > 1) fromVals.push(pageNum - 1);
   const attempts = [];
@@ -2030,19 +2383,27 @@ async function fetchPlaylistPage(
   }
   pushUnique(`https://rule34video.com/my/playlists/${pid}/${pageNum}/`);
 
+  const sexId = String(sexGroupId || '').trim();
+  const urls = sexId
+    ? attempts.map((u) => appendSexGroupParams(u, sexId))
+    : attempts;
+
   let html = '';
   let used = '';
   let lastLen = 0;
-  for (const url of attempts) {
-    const res = await fetch(url, {
-      credentials: 'include',
-      redirect: 'follow',
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-        Accept: 'text/html, */*;q=0.1',
-      },
-    });
-    const text = await res.text();
+  for (const url of urls) {
+    let res;
+    let text;
+    try {
+      ({ res, text } = await fetchSiteText(url, {
+        retries: rateLimitRetries,
+        preferSameOrigin: !!sexId,
+      }));
+    } catch (err) {
+      if (err?.code === 'RATE_LIMITED') throw err;
+      lastLen = 0;
+      continue;
+    }
     lastLen = text.length;
     if (!res.ok) continue;
     if (
@@ -2056,7 +2417,10 @@ async function fetchPlaylistPage(
       return {
         page: pageNum,
         items: parsed,
-        maxPage: parseMaxPage(text),
+        maxPage: parseMaxPage(text, {
+          fromKey,
+          scope: `playlist:${pid}`,
+        }),
         sourceUrl: url,
         ...(includeHtml ? { html: text } : {}),
       };
@@ -2076,14 +2440,20 @@ async function fetchPlaylistPage(
   return {
     page: pageNum,
     items,
-    maxPage: parseMaxPage(html),
+    maxPage: parseMaxPage(html, {
+      fromKey,
+      scope: `playlist:${pid}`,
+    }),
     sourceUrl: used,
     ...(includeHtml ? { html } : {}),
   };
 }
 
 /* keep fetchFavoritesPage below — marker for splice safety */
-async function fetchFavoritesPage(page, { includeHtml = false } = {}) {
+async function fetchFavoritesPage(
+  page,
+  { includeHtml = false, sexGroupId = '', rateLimitRetries = 6 } = {},
+) {
   const pageNum = Number(page);
   if (!Number.isInteger(pageNum) || pageNum < 1) {
     throw new Error('invalid page');
@@ -2114,20 +2484,37 @@ async function fetchFavoritesPage(page, { includeHtml = false } = {}) {
       'https://rule34video.com/my/favourites/videos/?mode=async&function=get_block&block_id=list_videos_my_favourite_videos',
     );
   }
+  const sexId = String(sexGroupId || '').trim();
+  // Sex enrich: one proven async URL shape — do not fan out every fallback
+  // (that multiplies traffic right after the full-list crawl and trips 429).
+  let urls = attempts;
+  if (sexId) {
+    const primary = [
+      pageNum === 1
+        ? 'https://rule34video.com/my/favourites/videos/?mode=async&function=get_block&block_id=list_videos_my_favourite_videos'
+        : null,
+      `https://rule34video.com/my/favourites/videos/?mode=async&function=get_block&block_id=list_videos_my_favourite_videos&from_my_fav_videos=${pageNum}`,
+      `https://rule34video.com/my/favourites/videos/`,
+    ].filter(Boolean);
+    urls = primary.map((u) => appendSexGroupParams(u, sexId));
+  }
 
   let html = '';
   let used = '';
   let lastLen = 0;
-  for (const url of attempts) {
-    const res = await fetch(url, {
-      credentials: 'include',
-      redirect: 'follow',
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-        Accept: 'text/html, */*;q=0.1',
-      },
-    });
-    const text = await res.text();
+  for (const url of urls) {
+    let res;
+    let text;
+    try {
+      ({ res, text } = await fetchSiteText(url, {
+        retries: rateLimitRetries,
+        preferSameOrigin: !!sexId,
+      }));
+    } catch (err) {
+      if (err?.code === 'RATE_LIMITED') throw err;
+      lastLen = 0;
+      continue;
+    }
     lastLen = text.length;
     if (!res.ok) continue;
     if (/login-required|\/login\/|\?login/i.test(res.url) && !/item\s+thumb/i.test(text)) {
@@ -2135,6 +2522,11 @@ async function fetchFavoritesPage(page, { includeHtml = false } = {}) {
     }
     if (/captcha|cf-browser-verification|just a moment/i.test(text) && !/item\s+thumb/i.test(text)) {
       throw new Error('captcha or bot check encountered');
+    }
+    if (isRateLimitedResponse(res.status, text)) {
+      throw new Error(
+        `rate limited by site (${lastLen} bytes) — wait ~30s and Rebuild index again`,
+      );
     }
     const parsed = parseFavoriteCards(text, pageNum);
     if (parsed.length) {
@@ -2255,6 +2647,124 @@ function extractCardMetaFromChunk(chunk) {
 }
 
 /**
+ * Sex label from a list card badge. Favorites/playlists ignore the top
+ * category_group_id / flag1 filter, so Tag sex uses these overlays instead:
+ *   <div class="futa">Futa</div> | Gay | (none → straight).
+ */
+function parseSexGroupFromCardChunk(chunk) {
+  if (!chunk) return '';
+  const labels = [];
+  const re = /<div\s+class=["'][^"']*\bfuta\b[^"']*["']\s*>\s*([^<]*?)\s*<\/div>/gi;
+  let m;
+  while ((m = re.exec(chunk))) {
+    const t = stripHtmlText(m[1]).toLowerCase();
+    if (t) labels.push(t);
+  }
+  if (labels.some((t) => t === 'futa' || t === 'trans')) return 'futa';
+  if (labels.some((t) => t === 'gay')) return 'gay';
+  return 'straight';
+}
+
+/**
+ * Site upload relative age from popup-video / detail HTML.
+ * Favorites list `.added` is import time; popup calendar is post_date.
+ */
+function extractUploadedTextFromHtml(html) {
+  if (!html) return '';
+  const cal = html.match(
+    /custom-calendar[\s\S]{0,160}?<span\b[^>]*>\s*([^<]+?)\s*<\/span>/i,
+  );
+  if (cal) {
+    const text = stripHtmlText(cal[1]);
+    if (text) return text;
+  }
+  const added = html.match(
+    /class=["'][^"']*\badded\b[^"']*["'][^>]*>[\s\S]*?(?:<\/svg>|>)\s*([^<]+)/i,
+  );
+  if (added) {
+    const text = stripHtmlText(added[1]);
+    if (text && /\bago\b|today|yesterday|just\s+now/i.test(text)) return text;
+  }
+  const iso = html.match(/uploadDate"\s*:\s*"(\d{4}-\d{2}-\d{2})"/i);
+  if (iso) return relativeAgeFromIsoDate(iso[1]);
+  return '';
+}
+
+function relativeAgeFromIsoDate(isoDay) {
+  const m = String(isoDay || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  const then = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (!Number.isFinite(then)) return '';
+  const days = Math.max(0, Math.floor((Date.now() - then) / 86400000));
+  if (days <= 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) {
+    const w = Math.max(1, Math.floor(days / 7));
+    return w === 1 ? '1 week ago' : `${w} weeks ago`;
+  }
+  if (days < 365) {
+    const mo = Math.max(1, Math.floor(days / 30));
+    return mo === 1 ? '1 month ago' : `${mo} months ago`;
+  }
+  const y = Math.max(1, Math.floor(days / 365));
+  return y === 1 ? '1 year ago' : `${y} years ago`;
+}
+
+async function fetchUploadMetaForIds(videoIds, { concurrency = 6, shouldCancel = null } = {}) {
+  const ids = [
+    ...new Set(
+      (videoIds || [])
+        .map((id) => String(id || '').trim())
+        .filter((id) => /^[1-9]\d*$/.test(id)),
+    ),
+  ];
+  const results = {};
+  let cursor = 0;
+  let rateLimited = false;
+  let cancelled = false;
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, ids.length || 1)) }, async () => {
+    while (cursor < ids.length) {
+      if (rateLimited || cancelled) return;
+      if (typeof shouldCancel === 'function' && (await shouldCancel())) {
+        cancelled = true;
+        return;
+      }
+      const i = cursor;
+      cursor += 1;
+      const id = ids[i];
+      try {
+        const res = await fetch(`https://rule34video.com/popup-video/${id}/`, {
+          credentials: 'include',
+          redirect: 'follow',
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            Accept: 'text/html, */*;q=0.1',
+          },
+        });
+        const text = await res.text();
+        if (isRateLimitedResponse(res.status, text)) {
+          rateLimited = true;
+          return;
+        }
+        if (!res.ok) continue;
+        const uploaded = extractUploadedTextFromHtml(text);
+        if (uploaded) results[id] = { uploadedText: uploaded };
+      } catch (_) {
+        /* ignore one id */
+      }
+    }
+  });
+  if (ids.length) await Promise.all(workers);
+  if (cancelled) {
+    const err = new Error('index cancelled');
+    err.code = 'INDEX_CANCELLED';
+    throw err;
+  }
+  return { results, count: Object.keys(results).length, rateLimited };
+}
+
+/**
  * Full `.item.thumb` block for a video. Meta (views/rating/added) sits ~2KB after
  * the /video/{id}/ href — a short window around the URL misses it.
  */
@@ -2309,6 +2819,7 @@ function parseFavoriteCards(html, pageNum) {
       viewsText: '',
       ratingText: '',
       addedText: '',
+      sexGroup: '',
     });
     index += 1;
   }
@@ -2338,6 +2849,7 @@ function parseFavoriteCards(html, pageNum) {
       it.viewsText = meta.viewsText;
       it.ratingText = meta.ratingText;
       it.addedText = meta.addedText;
+      if (!it.sexGroup) it.sexGroup = parseSexGroupFromCardChunk(chunk);
     });
     return items;
   }
@@ -2376,27 +2888,63 @@ function parseFavoriteCards(html, pageNum) {
       viewsText: meta.viewsText,
       ratingText: meta.ratingText,
       addedText: meta.addedText,
+      sexGroup: parseSexGroupFromCardChunk(block),
     });
   }
   return items;
 }
 
-function parseMaxPage(html) {
+function parseMaxPage(html, { fromKey = '', scope = 'favorites' } = {}) {
   let max = 0;
+  const scopeKey = String(scope || 'favorites');
+  const isPlaylist = scopeKey.startsWith('playlist:') || scopeKey === 'playlist';
+
+  if (isPlaylist) {
+    // Only trust this playlist's from_* keys — never from_my_fav_* or a bare
+    // "(2450)" in page chrome (that inflated small playlists to 1/10→a/a+1).
+    const keyHints = [];
+    const fk = String(fromKey || '').trim();
+    if (fk) keyHints.push(fk.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    keyHints.push('from_videos(?:_common(?:_videos_list)?)?');
+    for (const key of keyHints) {
+      try {
+        const re = new RegExp(`${key}:(\\d+)`, 'gi');
+        for (const m of html.matchAll(re)) {
+          const n = Number(m[1]);
+          if (Number.isInteger(n) && n > 0) max = Math.max(max, n);
+        }
+      } catch (_) {
+        /* ignore bad key */
+      }
+    }
+    for (const m of html.matchAll(/data-parameters="[^"]*(from_videos[a-z0-9_]*):(\d+)/gi)) {
+      const n = Number(m[2]);
+      if (Number.isInteger(n) && n > 0) max = Math.max(max, n);
+    }
+    return max || null;
+  }
+
   for (const m of html.matchAll(/from_my_fav(?:ourite)?_videos:(\d+)/gi)) {
     max = Math.max(max, Number(m[1]));
   }
-  for (const m of html.matchAll(/from_videos(?:_common(?:_videos_list)?)?:(\d+)/gi)) {
-    max = Math.max(max, Number(m[1]));
-  }
-  for (const m of html.matchAll(/from_[a-z0-9_]+:(\d+)/gi)) {
-    max = Math.max(max, Number(m[1]));
-  }
-  for (const m of html.matchAll(/data-parameters="[^"]*from[^"]*?:(\d+)/gi)) {
-    max = Math.max(max, Number(m[1]));
-  }
+  // Do NOT scan generic from_videos / from_* here — Favorites HTML includes other
+  // blocks (sidebars, recommendations) whose from_* keys inflate crawls
+  // (e.g. ~44 real pages → 222 pages / 2000+ phantom ids).
   const active = html.match(/pagination[\s\S]*?item active[^>]*>\s*(\d+)/i);
   if (active) max = Math.max(max, Number(active[1]));
+  // Headline "(N)" may raise the pager slightly, but never jump far above fav keys.
+  const totalHit = html.match(/\(\s*([\d,]+)\s*(?:videos?)?\s*\)/i);
+  if (totalHit) {
+    const total = Number(String(totalHit[1]).replace(/,/g, ''));
+    if (Number.isInteger(total) && total >= 20) {
+      const byTotal = Math.ceil(total / 12);
+      if (max > 0) {
+        if (byTotal > max && byTotal <= max + 2) max = byTotal;
+      } else if (byTotal > 0) {
+        max = byTotal;
+      }
+    }
+  }
   return max || null;
 }
 
@@ -2412,27 +2960,526 @@ function idleIndexJob() {
     fromKey: '',
     page: 0,
     maxPage: 0,
+    startMaxPage: 0,
+    libraryTotal: 0,
+    pageSize: 0,
+    probedPastEnd: false,
     videos: [],
     error: '',
+    phase: '', // '' | 'sex' (align Futa/Straight with site category_group_id)
+    /** List crawl page count; kept while phase=sex overwrites page/maxPage for UI. */
+    listMaxPage: 0,
+    /** Within sex step: list page while reading card badges. */
+    sexFilterPage: 0,
+    sexFilterMaxPage: 0,
+    /** 'cards' while reading badges; legacy 'futa' | 'straight' */
+    sexFilterLabel: '',
+    /** When true, skip list crawl and only run sex enrich on job.videos. */
+    sexOnly: false,
+    /** 'incremental' (page-range merge) | 'full' (all pages) | 'sex' | 'sex-delta'. */
+    mode: '',
+    /** Sex-delta: only classify these videoIds (empty = all untagged). */
+    targetIds: [],
+    /** Inclusive page window for incremental Refresh (absolute list pages). */
+    fromPage: 0,
+    toPage: 0,
     startedAt: 0,
     updatedAt: 0,
     cancelRequested: false,
   };
 }
 
+function mergeIndexRowFields(prev, row, pageNum, idx) {
+  const id = String(row?.videoId || prev?.videoId || '').trim();
+  const durationSec = coerceIndexDurationSec(row?.durationSec);
+  return {
+    ...(prev || {}),
+    videoId: id,
+    title: row?.title || prev?.title || id,
+    detailUrl:
+      row?.detailUrl || prev?.detailUrl || `https://rule34video.com/video/${id}/`,
+    favoritePage:
+      Number(row?.favoritePage) || pageNum || Number(prev?.favoritePage) || 0,
+    cardIndex: Number.isInteger(row?.cardIndex) ? row.cardIndex : idx,
+    durationSec:
+      durationSec != null ? durationSec : coerceIndexDurationSec(prev?.durationSec),
+    thumbUrl: normalizeThumbUrl(row?.thumbUrl) || normalizeThumbUrl(prev?.thumbUrl) || '',
+    previewUrl:
+      normalizeThumbUrl(row?.previewUrl) || normalizeThumbUrl(prev?.previewUrl) || '',
+    viewsText: String(row?.viewsText || prev?.viewsText || '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    ratingText: String(row?.ratingText || prev?.ratingText || '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    addedText: String(row?.addedText || prev?.addedText || '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    uploadedText: String(row?.uploadedText || prev?.uploadedText || '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    sexGroup: String(prev?.sexGroup || row?.sexGroup || '').trim(),
+  };
+}
+
+/**
+ * Merge one list page into an existing index.
+ * Page 1: promote that page to the front (newest-first).
+ * Other pages: upsert in place; append truly new ids (keeps mid-list order).
+ */
+function mergeIndexPageVideos(existing, pageRows, pageNum) {
+  const prevById = new Map();
+  const priorOrder = [];
+  (Array.isArray(existing) ? existing : []).forEach((v) => {
+    const id = String(v?.videoId || '').trim();
+    if (!id || prevById.has(id)) return;
+    prevById.set(id, v);
+    priorOrder.push(id);
+  });
+  const pageIds = [];
+  const seenPage = new Set();
+  const pageMerged = new Map();
+  (Array.isArray(pageRows) ? pageRows : []).forEach((row, idx) => {
+    const id = String(row?.videoId || '').trim();
+    if (!id || seenPage.has(id)) return;
+    seenPage.add(id);
+    pageIds.push(id);
+    pageMerged.set(id, mergeIndexRowFields(prevById.get(id) || {}, row, pageNum, idx));
+  });
+  const promote = Number(pageNum) === 1;
+  if (promote) {
+    const merged = pageIds.map((id) => pageMerged.get(id));
+    priorOrder.forEach((id) => {
+      if (seenPage.has(id)) return;
+      merged.push(prevById.get(id));
+    });
+    return merged;
+  }
+  const merged = [];
+  const emitted = new Set();
+  priorOrder.forEach((id) => {
+    if (seenPage.has(id)) {
+      merged.push(pageMerged.get(id));
+    } else {
+      merged.push(prevById.get(id));
+    }
+    emitted.add(id);
+  });
+  pageIds.forEach((id) => {
+    if (emitted.has(id)) return;
+    merged.push(pageMerged.get(id));
+  });
+  return merged;
+}
+
 function publicIndexJobStatus(job) {
   const j = job || idleIndexJob();
+  const phase = j.phase || '';
+  const listMax = Math.max(0, Number(j.listMaxPage) || 0);
+  const mode = String(j.mode || '') || (j.sexOnly ? 'sex' : '');
+  const fromPage = Math.max(0, Number(j.fromPage) || 0);
+  const toPage = Math.max(0, Number(j.toPage) || 0);
+  const absPage = Math.max(0, Number(j.page) || 0);
+  let page = absPage;
+  let maxPage = Math.max(1, listMax || Number(j.maxPage) || 1);
+  if (phase === 'sex') {
+    page = absPage;
+    maxPage = Math.max(1, Number(j.maxPage) || 1);
+  } else if (mode === 'incremental' && fromPage > 0) {
+    // Progress is relative to the from–to window (3–3 → 0/1…1/1), not absolute
+    // site page numbers (which looked like a 1…3 full crawl).
+    const fromP = fromPage;
+    const toP = Math.max(fromP, toPage || fromP);
+    const total = Math.max(1, toP - fromP + 1);
+    page = absPage < fromP ? 0 : Math.min(total, absPage - fromP + 1);
+    maxPage = total;
+  }
   return {
     status: j.status || 'idle',
     scope: j.scope || '',
     playlistId: j.playlistId || '',
-    page: Number(j.page) || 0,
-    maxPage: Number(j.maxPage) || 0,
+    page,
+    maxPage,
+    listMaxPage: listMax,
+    sexFilterPage: Math.max(0, Number(j.sexFilterPage) || 0),
+    sexFilterMaxPage: Math.max(0, Number(j.sexFilterMaxPage) || 0),
+    sexFilterLabel: String(j.sexFilterLabel || ''),
     videoCount: Array.isArray(j.videos) ? j.videos.length : 0,
     error: j.error || '',
+    phase,
+    mode,
+    sexOnly: !!j.sexOnly,
+    fromPage,
+    toPage,
+    targetIds: Array.isArray(j.targetIds) ? j.targetIds.map(String) : [],
+    /** Absolute list page last completed (incremental Refresh). */
+    absPage,
     startedAt: Number(j.startedAt) || 0,
     updatedAt: Number(j.updatedAt) || 0,
     cancelRequested: !!j.cancelRequested,
+  };
+}
+
+/** Site top filter cookie (cleared during list index so a stuck sex chip cannot shrink crawls). */
+const SEX_GROUP_COOKIE = 'category_group_id';
+
+/** Site UI also pushes flag1 via #js-ajax_sort data-parameters (flag1:15;). */
+function appendSexGroupParams(url, sexGroupId) {
+  const id = String(sexGroupId || '').trim();
+  if (!id || !url) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.set('flag1', id);
+    return u.toString();
+  } catch (_) {
+    const join = String(url).includes('?') ? '&' : '?';
+    return `${url}${join}flag1=${encodeURIComponent(id)}`;
+  }
+}
+
+async function readCategoryGroupIdCookie() {
+  try {
+    const c = await chrome.cookies.get({
+      url: 'https://rule34video.com/',
+      name: SEX_GROUP_COOKIE,
+    });
+    return c && c.value != null ? String(c.value) : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+async function findRule34VideoTab() {
+  try {
+    const tabs = await chrome.tabs.query({
+      url: ['https://rule34video.com/*', 'https://www.rule34video.com/*'],
+    });
+    if (!tabs?.length) return null;
+    return tabs.find((t) => t.active && t.id != null) || tabs.find((t) => t.id != null) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchSiteTextInTab(tabId, url) {
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'ISOLATED',
+    func: async (fetchUrl) => {
+      const res = await fetch(fetchUrl, {
+        credentials: 'include',
+        redirect: 'follow',
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+          Accept: 'text/html, */*;q=0.1',
+        },
+      });
+      const text = await res.text();
+      return {
+        ok: !!res.ok,
+        status: Number(res.status) || 0,
+        url: String(res.url || fetchUrl),
+        text: String(text || ''),
+      };
+    },
+    args: [url],
+  });
+  const payload = result?.result;
+  if (!payload || typeof payload.text !== 'string') {
+    throw new Error('same-origin sex fetch returned no body');
+  }
+  return payload;
+}
+
+async function writeCategoryGroupIdCookie(value) {
+  const url = 'https://rule34video.com/';
+  const v = value == null ? '' : String(value);
+  try {
+    if (v === '') {
+      await chrome.cookies.remove({ url, name: SEX_GROUP_COOKIE });
+      try {
+        await chrome.cookies.remove({
+          url: 'https://www.rule34video.com/',
+          name: SEX_GROUP_COOKIE,
+        });
+      } catch (_) {
+        /* optional */
+      }
+      return;
+    }
+    const base = {
+      url,
+      name: SEX_GROUP_COOKIE,
+      value: v,
+      domain: '.rule34video.com',
+      path: '/',
+      expirationDate: Math.floor(Date.now() / 1000) + 31536000,
+    };
+    // Prefer SameSite=None so SW fetches can still send it when needed.
+    let saved = await chrome.cookies.set({
+      ...base,
+      secure: true,
+      sameSite: 'no_restriction',
+    });
+    if (!saved) saved = await chrome.cookies.set(base);
+    if (!saved) throw new Error('chrome.cookies.set returned null');
+    const got = await readCategoryGroupIdCookie();
+    if (String(got) !== v) {
+      throw new Error(`write mismatch (want ${v}, got ${got || 'empty'})`);
+    }
+  } catch (err) {
+    throw new Error(`category_group_id cookie: ${err?.message || err}`);
+  }
+}
+
+async function assertIndexJobNotCancelled() {
+  if (indexJobCancelFlag) {
+    const err = new Error('index cancelled');
+    err.code = 'INDEX_CANCELLED';
+    throw err;
+  }
+  const job = await readIndexJob();
+  if (job.cancelRequested || job.status === 'stopping') {
+    indexJobCancelFlag = true;
+    const err = new Error('index cancelled');
+    err.code = 'INDEX_CANCELLED';
+    throw err;
+  }
+}
+
+/** Sleep that aborts within ~150ms when Stop is pressed. */
+async function sleepIndexJob(ms) {
+  const end = Date.now() + Math.max(0, Number(ms) || 0);
+  while (Date.now() < end) {
+    await assertIndexJobNotCancelled();
+    const left = end - Date.now();
+    if (left <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(150, left)));
+  }
+  await assertIndexJobNotCancelled();
+}
+
+function isTerminalJobStatus(status) {
+  return ['stopped', 'done', 'error', 'idle'].includes(String(status || ''));
+}
+
+function countSexGroupTagged(videos) {
+  return (Array.isArray(videos) ? videos : []).reduce(
+    (n, v) => n + (String(v?.sexGroup || '').trim() ? 1 : 0),
+    0,
+  );
+}
+
+function sexWantIdsForEnrich(rows, { delta = false, targetIds = [] } = {}) {
+  const targetSet = new Set(
+    (Array.isArray(targetIds) ? targetIds : [])
+      .map((id) => String(id || '').trim())
+      .filter(Boolean),
+  );
+  const want = new Set();
+  (Array.isArray(rows) ? rows : []).forEach((v) => {
+    const id = String(v?.videoId || '').trim();
+    if (!id) return;
+    if (targetSet.size) {
+      if (targetSet.has(id)) want.add(id);
+      return;
+    }
+    if (delta) {
+      if (!String(v?.sexGroup || '').trim()) want.add(id);
+      return;
+    }
+    want.add(id);
+  });
+  return want;
+}
+
+/**
+ * Align index sexGroup with list-card badges (Futa / Gay / unlabeled→straight).
+ * Favorites & playlists ignore the site top category_group_id / flag1 filter, so
+ * native chip clicks cannot produce distinct sets — badge crawl is the source of truth.
+ *
+ * delta=false: wipe and retag every row (full Tag sex / Retag sex).
+ * delta=true: keep existing labels; only fill want-ids (targetIds or untagged).
+ */
+async function enrichVideosWithSexGroups(job, videos, { delta = false } = {}) {
+  const rows = (Array.isArray(videos) ? videos : []).map((v) => ({
+    ...v,
+    sexGroup: delta ? String(v?.sexGroup || '').trim() : '',
+  }));
+  if (!rows.length) return rows;
+  const byId = new Map(rows.map((v) => [String(v.videoId || ''), v]));
+  const wantIds = sexWantIdsForEnrich(rows, {
+    delta,
+    targetIds: job?.targetIds,
+  });
+  if (delta && !wantIds.size) return rows;
+
+  const listMaxPage = Math.max(
+    Number(job.listMaxPage) || 0,
+    Number(job.maxPage) || 0,
+    Number(job.page) || 0,
+    Math.ceil(rows.length / 12),
+    1,
+  );
+
+  let seenWant = 0;
+  let futaBadges = 0;
+  let pagesWithCards = 0;
+
+  for (let page = 1; page <= listMaxPage; page += 1) {
+    await assertIndexJobNotCancelled();
+    await writeIndexJob({
+      ...(await readIndexJob()),
+      status: 'running',
+      phase: 'sex',
+      page: 1,
+      maxPage: 1,
+      listMaxPage,
+      sexFilterPage: page,
+      sexFilterMaxPage: listMaxPage,
+      sexFilterLabel: 'cards',
+      error: '',
+    });
+
+    let data;
+    try {
+      data = await fetchIndexPage(job, page, { rateLimitRetries: 6 });
+    } catch (err) {
+      if (err?.code === 'RATE_LIMITED' || /rate limited/i.test(String(err?.message || err))) {
+        await sleepIndexJob(10_000);
+        data = await fetchIndexPage(job, page, { rateLimitRetries: 6 });
+      } else {
+        throw err;
+      }
+    }
+
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (!items.length) {
+      if (page === 1) {
+        throw new Error('Tag sex page 1 parsed 0 videos — check login / list pages');
+      }
+      break;
+    }
+    pagesWithCards += 1;
+
+    items.forEach((it) => {
+      const id = String(it?.videoId || '').trim();
+      if (!id) return;
+      const row = byId.get(id);
+      if (!row) return;
+      if (delta && !wantIds.has(id)) return;
+      const sex = String(it?.sexGroup || '').trim() || 'straight';
+      row.sexGroup = sex;
+      if (sex === 'futa') futaBadges += 1;
+      if (delta && wantIds.has(id)) seenWant += 1;
+    });
+
+    if (delta && seenWant >= wantIds.size) break;
+    await sleepIndexJob(120);
+  }
+
+  const tagged = countSexGroupTagged(rows);
+  if (!delta && !tagged) {
+    throw new Error('Tag sex labeled 0 videos — check login / list pages');
+  }
+  if (!delta && rows.length >= 24 && pagesWithCards > 0 && futaBadges === 0) {
+    throw new Error(
+      'Tag sex found no Futa badges on list cards — cannot separate Futa/Straight',
+    );
+  }
+  return rows;
+}
+
+/**
+ * Cheap sex classify for a small set of new ids: parse badges on list page 1.
+ * Merges labels into the stored list index.
+ */
+let sexClassifyPage1Chain = Promise.resolve();
+
+async function classifySexGroupsPage1(opts = {}) {
+  const run = () => classifySexGroupsPage1Unlocked(opts);
+  const p = sexClassifyPage1Chain.then(run, run);
+  sexClassifyPage1Chain = p.then(
+    () => {},
+    () => {},
+  );
+  return p;
+}
+
+async function classifySexGroupsPage1Unlocked({
+  scope = 'favorites',
+  videoIds = [],
+  playlistId = '',
+  blockId = '',
+  fromKey = '',
+} = {}) {
+  const scopeKey = String(scope || 'favorites').trim() || 'favorites';
+  const want = new Set(
+    (Array.isArray(videoIds) ? videoIds : [])
+      .map((id) => String(id || '').trim())
+      .filter((id) => /^\d+$/.test(id)),
+  );
+  if (!want.size) {
+    return { tagged: 0, remaining: [], remainingCount: 0, byId: {} };
+  }
+  const current = await readIndexJob();
+  if (jobIsActive(current)) {
+    throw new Error(
+      `Index already running for ${current.scope} — stop it before sex auto-tag`,
+    );
+  }
+  let pid = String(playlistId || '').trim();
+  if (scopeKey.startsWith('playlist:')) {
+    pid = pid || scopeKey.slice('playlist:'.length);
+    if (!/^[1-9]\d*$/.test(pid)) throw new Error('invalid playlist id');
+  } else if (scopeKey !== 'favorites') {
+    throw new Error('unsupported index scope');
+  }
+  const existing = await getFavIndex(scopeKey);
+  const videos = Array.isArray(existing?.videos) ? existing.videos.slice() : [];
+  if (!videos.length) {
+    throw new Error('No list index to enrich — click Build index first');
+  }
+  const job = {
+    scope: scopeKey,
+    playlistId: scopeKey === 'favorites' ? '' : pid,
+    blockId: String(blockId || '').trim(),
+    fromKey: String(fromKey || '').trim(),
+    listMaxPage: 1,
+    startMaxPage: 1,
+  };
+  const data = await fetchIndexPage(job, 1, { rateLimitRetries: 4 });
+  const found = Object.create(null);
+  (Array.isArray(data?.items) ? data.items : []).forEach((it) => {
+    const id = String(it?.videoId || '').trim();
+    if (!id || !want.has(id)) return;
+    found[id] = String(it?.sexGroup || '').trim() || 'straight';
+  });
+  let tagged = 0;
+  const nextVideos = videos.map((v) => {
+    const id = String(v?.videoId || '').trim();
+    const label = found[id];
+    if (!label) return v;
+    tagged += 1;
+    return { ...v, sexGroup: label };
+  });
+  if (tagged) {
+    await setFavIndex(
+      {
+        builtAt: Number(existing?.builtAt) || Date.now(),
+        favTotal: nextVideos.length,
+        videos: nextVideos,
+        scope: scopeKey,
+      },
+      scopeKey,
+    );
+  }
+  const remaining = [...want].filter((id) => !found[id]);
+  return {
+    tagged,
+    remaining,
+    remainingCount: remaining.length,
+    byId: found,
   };
 }
 
@@ -2441,10 +3488,33 @@ async function readIndexJob() {
   return { ...idleIndexJob(), ...(data[INDEX_JOB_KEY] || {}) };
 }
 
+/** Serialize index-job writes so Stop cannot be clobbered by a stale progress write. */
+let indexJobWriteChain = Promise.resolve();
+let indexJobCancelFlag = false;
+
 async function writeIndexJob(job) {
-  const next = { ...idleIndexJob(), ...job, updatedAt: Date.now() };
-  await chrome.storage.local.set({ [INDEX_JOB_KEY]: next });
-  return next;
+  const run = async () => {
+    const cur = await readIndexJob();
+    const next = { ...idleIndexJob(), ...job, updatedAt: Date.now() };
+    // Progress patches often spread a pre-fetch snapshot (cancelRequested:false,
+    // status:'running'). Never let those undo an in-flight Stop.
+    if (!isTerminalJobStatus(next.status) && (cur.cancelRequested || cur.status === 'stopping' || indexJobCancelFlag)) {
+      next.cancelRequested = true;
+      next.status = 'stopping';
+      indexJobCancelFlag = true;
+    }
+    if (isTerminalJobStatus(next.status)) {
+      indexJobCancelFlag = false;
+    }
+    await chrome.storage.local.set({ [INDEX_JOB_KEY]: next });
+    return next;
+  };
+  const p = indexJobWriteChain.then(run, run);
+  indexJobWriteChain = p.then(
+    () => undefined,
+    () => undefined,
+  );
+  return p;
 }
 
 async function getIndexJobStatus() {
@@ -2460,6 +3530,7 @@ async function stopIndexJob() {
   if (job.status !== 'running' && job.status !== 'stopping') {
     return publicIndexJobStatus(job);
   }
+  indexJobCancelFlag = true;
   const next = await writeIndexJob({
     ...job,
     status: 'stopping',
@@ -2480,6 +3551,12 @@ async function startIndexJob({
   playlistId = '',
   blockId = '',
   fromKey = '',
+  libraryTotal = 0,
+  sexOnly = false,
+  mode = '',
+  fromPage = 0,
+  toPage = 0,
+  targetIds = [],
 } = {}) {
   const scopeKey = String(scope || 'favorites').trim() || 'favorites';
   const current = await readIndexJob();
@@ -2496,7 +3573,7 @@ async function startIndexJob({
   const renumber = await readRenumberJob();
   if (jobIsActive(renumber)) {
     throw new Error(
-      'Build/Refresh index cannot run while Renumber is active — finish or Stop Renumber first (shared Favorites crawl; Renumber also renames library files)',
+      'Build/Rebuild index cannot run while Renumber is active — finish or Stop Renumber first (shared Favorites crawl; Renumber also renames library files)',
     );
   }
   let pid = String(playlistId || '').trim();
@@ -2507,16 +3584,98 @@ async function startIndexJob({
     throw new Error('unsupported index scope');
   }
   const hintMax = Math.max(1, Number(maxPage) || 1);
+  const totalHint = Math.max(0, Number(libraryTotal) || 0);
+  let crawlMode = String(mode || '')
+    .trim()
+    .toLowerCase();
+  if (crawlMode === 'sex-delta') {
+    /* keep */
+  } else if (sexOnly || crawlMode === 'sex') {
+    crawlMode = 'sex';
+  } else if (crawlMode !== 'incremental' && crawlMode !== 'full') {
+    crawlMode = 'full';
+  }
+  const wantSex = crawlMode === 'sex' || crawlMode === 'sex-delta';
+  const sexTargets = (Array.isArray(targetIds) ? targetIds : [])
+    .map((id) => String(id || '').trim())
+    .filter((id) => /^\d+$/.test(id));
+  let seedVideos = [];
+  let listMaxPage = 0;
+  let crawlMaxPage = hintMax;
+  let rangeFrom = 0;
+  let rangeTo = 0;
+  let startPage = 0;
+  if (wantSex) {
+    const existing = await getFavIndex(scopeKey);
+    seedVideos = Array.isArray(existing?.videos) ? existing.videos.slice() : [];
+    if (!seedVideos.length) {
+      throw new Error('No list index to enrich — click Build index first');
+    }
+    if (crawlMode === 'sex-delta') {
+      const want = sexWantIdsForEnrich(seedVideos, {
+        delta: true,
+        targetIds: sexTargets,
+      });
+      if (!want.size) {
+        const idle = await writeIndexJob({
+          ...idleIndexJob(),
+          status: 'done',
+          scope: scopeKey,
+          playlistId: scopeKey === 'favorites' ? '' : pid,
+          mode: 'sex-delta',
+          sexOnly: true,
+          targetIds: sexTargets,
+          page: 2,
+          maxPage: 2,
+          listMaxPage: 1,
+          startedAt: Date.now(),
+        });
+        return publicIndexJobStatus(idle);
+      }
+    }
+    listMaxPage = Math.max(
+      hintMax,
+      Math.ceil(seedVideos.length / 12),
+      Number(existing?.favTotal) ? Math.ceil(Number(existing.favTotal) / 12) : 0,
+      1,
+    );
+  } else if (crawlMode === 'incremental') {
+    // Refresh: merge an inclusive page window into the existing list (no sex).
+    const existing = await getFavIndex(scopeKey);
+    seedVideos = Array.isArray(existing?.videos) ? existing.videos.slice() : [];
+    const rawFrom = Math.max(1, Number(fromPage) || 1);
+    const rawTo = Math.max(1, Number(toPage) || rawFrom);
+    rangeFrom = Math.min(rawFrom, rawTo);
+    rangeTo = Math.max(rawFrom, rawTo);
+    crawlMaxPage = rangeTo;
+    listMaxPage = rangeTo;
+    // nextPage = page + 1, so start just before the window.
+    startPage = rangeFrom - 1;
+  }
+  indexJobCancelFlag = false;
   const job = await writeIndexJob({
     status: 'running',
     scope: scopeKey,
     playlistId: scopeKey === 'favorites' ? '' : pid,
     blockId: String(blockId || '').trim(),
     fromKey: String(fromKey || '').trim(),
-    page: 0,
-    maxPage: hintMax,
-    videos: [],
+    page: wantSex ? 1 : startPage,
+    maxPage: wantSex ? 2 : crawlMaxPage,
+    startMaxPage: crawlMaxPage,
+    libraryTotal: totalHint || (wantSex ? seedVideos.length : 0),
+    pageSize: 0,
+    probedPastEnd: false,
+    videos: seedVideos,
     error: '',
+    phase: wantSex ? 'sex' : '',
+    listMaxPage,
+    sexFilterPage: 0,
+    sexFilterMaxPage: 0,
+    sexOnly: wantSex,
+    mode: crawlMode,
+    targetIds: sexTargets,
+    fromPage: rangeFrom,
+    toPage: rangeTo,
     startedAt: Date.now(),
     cancelRequested: false,
   });
@@ -2535,13 +3694,15 @@ function coerceIndexDurationSec(value) {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-async function fetchIndexPage(job, page) {
+async function fetchIndexPage(job, page, { sexGroupId = '', rateLimitRetries = 6 } = {}) {
   if (job.scope === 'favorites') {
-    return await fetchFavoritesPage(page);
+    return await fetchFavoritesPage(page, { sexGroupId, rateLimitRetries });
   }
   return await fetchPlaylistPage(job.playlistId, page, {
     blockId: job.blockId,
     fromKey: job.fromKey,
+    sexGroupId,
+    rateLimitRetries,
   });
 }
 
@@ -2549,67 +3710,266 @@ function runIndexJob() {
   if (indexJobRunning) return;
   indexJobRunning = true;
   (async () => {
+    const prevCategoryGroupCookie = await readCategoryGroupIdCookie();
     try {
+      // Favorites/playlist index must crawl the unfiltered list. The site top
+      // sex filter (and a stuck cookie from a prior sex-enrich) would shrink it.
+      try {
+        await writeCategoryGroupIdCookie('');
+        await new Promise((r) => setTimeout(r, 50));
+      } catch (_) {
+        /* continue; fetches still use whatever cookie is present */
+      }
       while (true) {
         let job = await readIndexJob();
         if (job.status !== 'running' && job.status !== 'stopping') break;
-        if (job.cancelRequested || job.status === 'stopping') {
+        if (job.cancelRequested || job.status === 'stopping' || indexJobCancelFlag) {
           await writeIndexJob({
             ...job,
             status: 'stopped',
             cancelRequested: false,
+            phase: '',
             // Drop partial crawl; keep previous FAV_INDEX_* untouched.
             videos: [],
             error: '',
           });
           break;
         }
+
+        // SW resume mid sex-enrich: do not treat sex page/maxPage as list crawl.
+        if (String(job.phase || '') === 'sex') {
+          let videos = Array.isArray(job.videos) ? job.videos : [];
+          if (!videos.length) {
+            await writeIndexJob({
+              ...job,
+              status: 'error',
+              cancelRequested: false,
+              phase: '',
+              videos: [],
+              error: 'indexed 0 videos — check login / page parse',
+            });
+            break;
+          }
+          try {
+            const delta = String(job.mode || '') === 'sex-delta';
+            videos = await enrichVideosWithSexGroups(job, videos, { delta });
+          } catch (err) {
+            if (
+              err?.code === 'INDEX_CANCELLED' ||
+              /index cancelled/i.test(String(err?.message || err))
+            ) {
+              await writeIndexJob({
+                ...(await readIndexJob()),
+                status: 'stopped',
+                cancelRequested: false,
+                phase: '',
+                videos: [],
+                error: '',
+              });
+              break;
+            }
+            throw err;
+          }
+          job = await readIndexJob();
+          if (job.cancelRequested || job.status === 'stopping' || indexJobCancelFlag) {
+            await writeIndexJob({
+              ...job,
+              status: 'stopped',
+              cancelRequested: false,
+              phase: '',
+              videos: [],
+              error: '',
+            });
+            break;
+          }
+          const listMaxPage = Math.max(
+            Number(job.listMaxPage) || 0,
+            Number(job.startMaxPage) || 0,
+            1,
+          );
+          await setFavIndex(
+            {
+              builtAt: Date.now(),
+              favTotal: videos.length,
+              videos,
+              scope: job.scope,
+            },
+            job.scope,
+          );
+          await writeIndexJob({
+            ...job,
+            status: 'done',
+            cancelRequested: false,
+            phase: '',
+            videos: [],
+            error: '',
+            page: listMaxPage,
+            maxPage: listMaxPage,
+            listMaxPage,
+          });
+          break;
+        }
+
         const nextPage = (Number(job.page) || 0) + 1;
         let maxPage = Math.max(1, Number(job.maxPage) || 1);
         if (nextPage > maxPage) {
           // Finished.
         } else {
-          const data = await fetchIndexPage(job, nextPage);
-          const batch = Array.isArray(data?.items) ? data.items : [];
-          if (data?.maxPage && Number(data.maxPage) > maxPage) {
-            maxPage = Number(data.maxPage);
+          let data;
+          try {
+            data = await fetchIndexPage(job, nextPage);
+            await assertIndexJobNotCancelled();
+          } catch (err) {
+            if (
+              err?.code === 'INDEX_CANCELLED' ||
+              /index cancelled/i.test(String(err?.message || err))
+            ) {
+              throw err;
+            }
+            const msg = String(err?.message || err);
+            const pastEnd =
+              nextPage > 1 &&
+              (/failed to load favorites page|parsed 0 videos|failed to load playlist page/i.test(
+                msg,
+              ) ||
+                !!job.probedPastEnd);
+            // One-shot probe past a truncated pager, or a mid-list empty under
+            // a sticky sex filter: finish with pages already collected.
+            if (pastEnd && (job.probedPastEnd || (Array.isArray(job.videos) && job.videos.length))) {
+              maxPage = nextPage - 1;
+              job = await writeIndexJob({
+                ...job,
+                status: 'running',
+                maxPage,
+                error: '',
+              });
+              data = null;
+            } else {
+              throw err;
+            }
           }
-          const videos = Array.isArray(job.videos) ? job.videos.slice() : [];
-          const seen = new Set(videos.map((v) => String(v.videoId || '')));
-          batch.forEach((it, idx) => {
-            const id = String(it.videoId || '');
-            if (!id || seen.has(id)) return;
-            seen.add(id);
-            videos.push({
-              videoId: id,
-              title: it.title || id,
-              detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/`,
-              favoritePage: Number(it.favoritePage) || nextPage,
-              cardIndex: Number.isInteger(it.cardIndex) ? it.cardIndex : idx,
-              durationSec: coerceIndexDurationSec(it.durationSec),
-              thumbUrl: normalizeThumbUrl(it.thumbUrl),
-              previewUrl: normalizeThumbUrl(it.previewUrl),
-              viewsText: String(it.viewsText || '').replace(/\s+/g, ' ').trim(),
-              ratingText: String(it.ratingText || '').replace(/\s+/g, ' ').trim(),
-              addedText: String(it.addedText || '').replace(/\s+/g, ' ').trim(),
+          if (data) {
+            const batch = Array.isArray(data?.items) ? data.items : [];
+            const isIncremental = String(job.mode || '') === 'incremental';
+            const libraryTotal = Math.max(0, Number(job.libraryTotal) || 0);
+            let pageSize = Math.max(0, Number(job.pageSize) || 0);
+            if (batch.length > pageSize) pageSize = batch.length;
+            const byTotal =
+              libraryTotal > 0 && pageSize > 0
+                ? Math.ceil(libraryTotal / pageSize)
+                : 0;
+            const parsedMax = Number(data?.maxPage) || 0;
+            const isPlaylistScope = String(job.scope || '').startsWith('playlist:');
+            const startMax = Math.max(1, Number(job.startMaxPage) || 1);
+
+            if (isIncremental) {
+              // Incremental merge: stay inside from–to (never expand via pager chrome).
+              const to = Math.max(1, Number(job.toPage) || startMax);
+              maxPage = to;
+            } else {
+              if (parsedMax > maxPage) maxPage = parsedMax;
+              if (byTotal > maxPage) maxPage = byTotal;
+              // Never shrink below the start hint (playlist pager said 2 pages).
+              if (startMax > maxPage) maxPage = startMax;
+              // Cap Favorites-chrome inflation above a solid native total / hint.
+              const solid = Math.max(byTotal, startMax);
+              if (solid > 0 && maxPage > solid + 2) maxPage = solid;
+            }
+
+            const priorVideos = Array.isArray(job.videos) ? job.videos.slice() : [];
+            const seen = new Set(
+              isIncremental ? [] : priorVideos.map((v) => String(v.videoId || '')),
+            );
+            // Skip per-card popup-video fetches during list crawl (~12×pages).
+            // Compact already lazy-loads uploadedText and patches the index.
+            // Incremental merge still keeps any prior uploadedText on known ids.
+            const pageRows = [];
+            batch.forEach((it, idx) => {
+              const id = String(it.videoId || '');
+              if (!id) return;
+              if (!isIncremental && seen.has(id)) return;
+              if (!isIncremental) seen.add(id);
+              pageRows.push({
+                videoId: id,
+                title: it.title || id,
+                detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/`,
+                favoritePage: Number(it.favoritePage) || nextPage,
+                cardIndex: Number.isInteger(it.cardIndex) ? it.cardIndex : idx,
+                durationSec: coerceIndexDurationSec(it.durationSec),
+                thumbUrl: normalizeThumbUrl(it.thumbUrl),
+                previewUrl: normalizeThumbUrl(it.previewUrl),
+                viewsText: String(it.viewsText || '').replace(/\s+/g, ' ').trim(),
+                ratingText: String(it.ratingText || '').replace(/\s+/g, ' ').trim(),
+                addedText: String(it.addedText || '').replace(/\s+/g, ' ').trim(),
+                uploadedText: '',
+              });
             });
-          });
-          job = await writeIndexJob({
-            ...job,
-            status: 'running',
-            page: nextPage,
-            maxPage,
-            videos,
-            error: '',
-          });
-          if (nextPage < maxPage) {
-            await new Promise((r) => setTimeout(r, 800));
-            continue;
+            const videos = isIncremental
+              ? mergeIndexPageVideos(priorVideos, pageRows, nextPage)
+              : priorVideos.concat(pageRows);
+
+            if (isIncremental) {
+              maxPage = Math.max(1, Number(job.toPage) || startMax);
+            } else if (
+              libraryTotal > 0 &&
+              videos.length >= libraryTotal &&
+              nextPage >= startMax
+            ) {
+              // Only stop early when we have also reached the pager hint.
+              // libraryTotal=12 (page-1 cards) used to force (0/2)→(1/1).
+              maxPage = nextPage;
+            } else if (isPlaylistScope && nextPage > 1 && batch.length === 0) {
+              maxPage = nextPage - 1;
+            } else if (
+              isPlaylistScope &&
+              nextPage > 1 &&
+              pageSize > 0 &&
+              batch.length > 0 &&
+              batch.length < Math.max(pageSize, 8) &&
+              nextPage >= startMax
+            ) {
+              // Short last page ends the playlist crawl (after meeting pager hint).
+              maxPage = nextPage;
+            } else if (isPlaylistScope && startMax > maxPage) {
+              maxPage = startMax;
+            }
+
+            let probedPastEnd = !!job.probedPastEnd;
+            // Unknown total + full final page: probe exactly one extra page.
+            if (
+              !isIncremental &&
+              !libraryTotal &&
+              !isPlaylistScope &&
+              nextPage >= maxPage &&
+              batch.length >= 8 &&
+              !probedPastEnd
+            ) {
+              maxPage = nextPage + 1;
+              probedPastEnd = true;
+            }
+            job = await writeIndexJob({
+              ...job,
+              status: 'running',
+              page: nextPage,
+              maxPage,
+              startMaxPage: Number(job.startMaxPage) || startMax,
+              pageSize,
+              libraryTotal,
+              probedPastEnd,
+              videos,
+              error: '',
+            });
+            if (nextPage < maxPage) {
+              // List-only crawl: short gap; sex enrich uses its own step cooldowns.
+              // ~200 pages × 250ms ≈ 50s sleep.
+              await sleepIndexJob(250);
+              continue;
+            }
           }
         }
-        // Persist final index.
+        // Persist list index (Futa/Straight is a separate sex-only job).
         job = await readIndexJob();
-        if (job.cancelRequested || job.status === 'stopping') {
+        if (job.cancelRequested || job.status === 'stopping' || indexJobCancelFlag) {
           await writeIndexJob({
             ...job,
             status: 'stopped',
@@ -2630,6 +3990,14 @@ function runIndexJob() {
           });
           break;
         }
+        const listMaxPage = Math.max(
+          Number(job.listMaxPage) || 0,
+          Number(job.page) || 0,
+          Number(job.maxPage) || 0,
+          Number(job.startMaxPage) || 0,
+          1,
+        );
+        const doneMax = listMaxPage;
         await setFavIndex(
           {
             builtAt: Date.now(),
@@ -2643,22 +4011,46 @@ function runIndexJob() {
           ...job,
           status: 'done',
           cancelRequested: false,
+          phase: '',
           videos: [],
           error: '',
-          page: Number(job.maxPage) || job.page,
+          page: doneMax,
+          maxPage: doneMax,
+          listMaxPage: doneMax,
         });
         break;
       }
     } catch (err) {
-      const job = await readIndexJob();
-      await writeIndexJob({
-        ...job,
-        status: 'error',
-        cancelRequested: false,
-        videos: [],
-        error: String(err?.message || err),
-      });
+      if (
+        err?.code === 'INDEX_CANCELLED' ||
+        /index cancelled/i.test(String(err?.message || err))
+      ) {
+        const job = await readIndexJob();
+        await writeIndexJob({
+          ...job,
+          status: 'stopped',
+          cancelRequested: false,
+          phase: '',
+          videos: [],
+          error: '',
+        });
+      } else {
+        const job = await readIndexJob();
+        await writeIndexJob({
+          ...job,
+          status: 'error',
+          cancelRequested: false,
+          phase: '',
+          videos: [],
+          error: String(err?.message || err),
+        });
+      }
     } finally {
+      try {
+        await writeCategoryGroupIdCookie(prevCategoryGroupCookie);
+      } catch (_) {
+        /* best-effort restore of the user's top sex filter */
+      }
       indexJobRunning = false;
       const job = await readIndexJob();
       if (job.status === 'running' || job.status === 'stopping') {
@@ -2720,10 +4112,31 @@ async function readRenumberJob() {
   return { ...idleRenumberJob(), ...(data[RENUMBER_JOB_KEY] || {}) };
 }
 
+/** Serialize renumber-job writes so Stop cannot be clobbered by a stale progress write. */
+let renumberJobWriteChain = Promise.resolve();
+let renumberJobCancelFlag = false;
+
 async function writeRenumberJob(job) {
-  const next = { ...idleRenumberJob(), ...job, updatedAt: Date.now() };
-  await chrome.storage.local.set({ [RENUMBER_JOB_KEY]: next });
-  return next;
+  const run = async () => {
+    const cur = await readRenumberJob();
+    const next = { ...idleRenumberJob(), ...job, updatedAt: Date.now() };
+    if (!isTerminalJobStatus(next.status) && (cur.cancelRequested || cur.status === 'stopping' || renumberJobCancelFlag)) {
+      next.cancelRequested = true;
+      next.status = 'stopping';
+      renumberJobCancelFlag = true;
+    }
+    if (isTerminalJobStatus(next.status)) {
+      renumberJobCancelFlag = false;
+    }
+    await chrome.storage.local.set({ [RENUMBER_JOB_KEY]: next });
+    return next;
+  };
+  const p = renumberJobWriteChain.then(run, run);
+  renumberJobWriteChain = p.then(
+    () => undefined,
+    () => undefined,
+  );
+  return p;
 }
 
 async function getRenumberJobStatus() {
@@ -2739,6 +4152,7 @@ async function stopRenumberJob() {
   if (job.status !== 'running' && job.status !== 'stopping') {
     return publicRenumberJobStatus(job);
   }
+  renumberJobCancelFlag = true;
   const next = await writeRenumberJob({
     ...job,
     status: 'stopping',
@@ -2758,9 +4172,10 @@ async function startRenumberJob({ maxPage = 1 } = {}) {
   const index = await readIndexJob();
   if (jobIsActive(index)) {
     throw new Error(
-      'Renumber cannot run while Build/Refresh index is active — finish or Stop index first (shared Favorites crawl; Renumber also renames library files)',
+      'Renumber cannot run while Build/Rebuild index is active — finish or Stop index first (shared Favorites crawl; Renumber also renames library files)',
     );
   }
+  renumberJobCancelFlag = false;
   const job = await writeRenumberJob({
     status: 'running',
     phase: 'crawl',
@@ -2790,7 +4205,7 @@ function runRenumberJob() {
       while (true) {
         let job = await readRenumberJob();
         if (job.status !== 'running' && job.status !== 'stopping') break;
-        if (job.cancelRequested || job.status === 'stopping') {
+        if (job.cancelRequested || job.status === 'stopping' || renumberJobCancelFlag) {
           await writeRenumberJob({
             ...job,
             status: 'stopped',
@@ -2810,6 +4225,22 @@ function runRenumberJob() {
           let maxPage = Math.max(1, Number(job.maxPage) || 1);
           if (nextPage <= maxPage) {
             const data = await fetchFavoritesPage(nextPage);
+            if (renumberJobCancelFlag) {
+              const cur = await readRenumberJob();
+              if (cur.cancelRequested || cur.status === 'stopping' || renumberJobCancelFlag) {
+                await writeRenumberJob({
+                  ...cur,
+                  status: 'stopped',
+                  phase: '',
+                  cancelRequested: false,
+                  videoIds: [],
+                  titles: {},
+                  result: null,
+                  error: '',
+                });
+                break;
+              }
+            }
             const batch = Array.isArray(data?.items) ? data.items : [];
             if (data?.maxPage && Number(data.maxPage) > maxPage) {
               maxPage = Number(data.maxPage);
@@ -2842,7 +4273,7 @@ function runRenumberJob() {
           }
 
           job = await readRenumberJob();
-          if (job.cancelRequested || job.status === 'stopping') {
+          if (job.cancelRequested || job.status === 'stopping' || renumberJobCancelFlag) {
             await writeRenumberJob({
               ...job,
               status: 'stopped',
@@ -2890,7 +4321,7 @@ function runRenumberJob() {
             },
           });
           job = await readRenumberJob();
-          if (job.cancelRequested || job.status === 'stopping') {
+          if (job.cancelRequested || job.status === 'stopping' || renumberJobCancelFlag) {
             // Rebuild already applied; still mark stopped so UI does not claim success toast path.
             await writeRenumberJob({
               ...job,
@@ -2940,15 +4371,33 @@ function runRenumberJob() {
       }
     } catch (err) {
       const job = await readRenumberJob();
-      await writeRenumberJob({
-        ...job,
-        status: 'error',
-        phase: '',
-        cancelRequested: false,
-        videoIds: [],
-        titles: {},
-        error: String(err?.message || err),
-      });
+      if (
+        renumberJobCancelFlag ||
+        job.cancelRequested ||
+        job.status === 'stopping' ||
+        /renumber cancelled|index cancelled|cancelled/i.test(String(err?.message || err))
+      ) {
+        await writeRenumberJob({
+          ...job,
+          status: 'stopped',
+          phase: '',
+          cancelRequested: false,
+          videoIds: [],
+          titles: {},
+          result: null,
+          error: '',
+        });
+      } else {
+        await writeRenumberJob({
+          ...job,
+          status: 'error',
+          phase: '',
+          cancelRequested: false,
+          videoIds: [],
+          titles: {},
+          error: String(err?.message || err),
+        });
+      }
     } finally {
       renumberJobRunning = false;
       const job = await readRenumberJob();
@@ -2965,12 +4414,734 @@ function runRenumberJob() {
   })();
 }
 
+const PLAYLIST_ADD_JOB_KEY = 'hxyrulePlaylistAddJob';
+let playlistAddJobRunning = false;
+let playlistAddJobWriteChain = Promise.resolve();
+let playlistAddJobCancelFlag = false;
+
+function idlePlaylistAddJob() {
+  return {
+    status: 'idle',
+    mode: 'save',
+    phase: '',
+    playlistIds: [],
+    videoIds: [],
+    items: {},
+    playlistIdx: 0,
+    videoIdx: 0,
+    done: 0,
+    total: 0,
+    ok: 0,
+    failed: 0,
+    okIdsByPlaylist: {},
+    moveOkIds: [],
+    errors: [],
+    result: null,
+    error: '',
+    sourceScope: '',
+    startedAt: 0,
+    updatedAt: 0,
+    cancelRequested: false,
+  };
+}
+
+function publicPlaylistAddJobStatus(job) {
+  const j = job || idlePlaylistAddJob();
+  return {
+    status: j.status || 'idle',
+    mode: j.mode || 'save',
+    phase: j.phase || '',
+    playlistIds: Array.isArray(j.playlistIds) ? j.playlistIds.slice() : [],
+    videoCount: Array.isArray(j.videoIds) ? j.videoIds.length : 0,
+    playlistIdx: Number(j.playlistIdx) || 0,
+    videoIdx: Number(j.videoIdx) || 0,
+    done: Number(j.done) || 0,
+    total: Number(j.total) || 0,
+    ok: Number(j.ok) || 0,
+    failed: Number(j.failed) || 0,
+    error: j.error || '',
+    result: j.result || null,
+    sourceScope: String(j.sourceScope || ''),
+    startedAt: Number(j.startedAt) || 0,
+    updatedAt: Number(j.updatedAt) || 0,
+    cancelRequested: !!j.cancelRequested,
+  };
+}
+
+async function readPlaylistAddJob() {
+  const data = await chrome.storage.local.get([PLAYLIST_ADD_JOB_KEY]);
+  return { ...idlePlaylistAddJob(), ...(data[PLAYLIST_ADD_JOB_KEY] || {}) };
+}
+
+async function writePlaylistAddJob(job) {
+  const run = async () => {
+    const cur = await readPlaylistAddJob();
+    const next = { ...idlePlaylistAddJob(), ...job, updatedAt: Date.now() };
+    if (
+      !isTerminalJobStatus(next.status) &&
+      (cur.cancelRequested || cur.status === 'stopping' || playlistAddJobCancelFlag)
+    ) {
+      next.cancelRequested = true;
+      next.status = 'stopping';
+      playlistAddJobCancelFlag = true;
+    }
+    if (isTerminalJobStatus(next.status)) {
+      playlistAddJobCancelFlag = false;
+    }
+    await chrome.storage.local.set({ [PLAYLIST_ADD_JOB_KEY]: next });
+    return next;
+  };
+  const p = playlistAddJobWriteChain.then(run, run);
+  playlistAddJobWriteChain = p.then(
+    () => undefined,
+    () => undefined,
+  );
+  return p;
+}
+
+async function getPlaylistAddJobStatus() {
+  const job = await readPlaylistAddJob();
+  if ((job.status === 'running' || job.status === 'stopping') && !playlistAddJobRunning) {
+    runPlaylistAddJob();
+  }
+  return publicPlaylistAddJobStatus(job);
+}
+
+async function stopPlaylistAddJob() {
+  const job = await readPlaylistAddJob();
+  if (job.status !== 'running' && job.status !== 'stopping') {
+    return publicPlaylistAddJobStatus(job);
+  }
+  playlistAddJobCancelFlag = true;
+  const next = await writePlaylistAddJob({
+    ...job,
+    status: 'stopping',
+    cancelRequested: true,
+  });
+  runPlaylistAddJob();
+  return publicPlaylistAddJobStatus(next);
+}
+
+async function startPlaylistAddJob({
+  playlistIds = [],
+  videoIds = [],
+  mode = 'save',
+  items = {},
+  sourceScope = '',
+} = {}) {
+  const current = await readPlaylistAddJob();
+  if (jobIsActive(current)) {
+    runPlaylistAddJob();
+    return publicPlaylistAddJobStatus(current);
+  }
+  const pids = [
+    ...new Set(
+      (playlistIds || [])
+        .map((x) => String(x || '').trim())
+        .filter((id) => isValidPlaylistId(id)),
+    ),
+  ];
+  const rawIds = [
+    ...new Set((videoIds || []).map((v) => String(v).trim()).filter((v) => /^[1-9]\d*$/.test(v))),
+  ];
+  if (!pids.length) throw new Error('invalid playlist id');
+  if (!rawIds.length) throw new Error('no video ids');
+  const normalizedItems = normalizeJobItems(items, rawIds);
+  const ids = await sortVideoIdsByOrdinalAsc(rawIds, normalizedItems);
+  const jobMode = mode === 'move' ? 'move' : 'save';
+  const saveList = jobMode === 'move' ? pids.slice(0, -1) : pids;
+  // Move is one-by-one (same as save) so playlist order follows ascending seq.
+  const total =
+    jobMode === 'move'
+      ? saveList.length * ids.length + ids.length
+      : saveList.length * ids.length;
+  const phase = jobMode === 'move' && !saveList.length ? 'move' : 'save';
+  playlistAddJobCancelFlag = false;
+  const job = await writePlaylistAddJob({
+    status: 'running',
+    mode: jobMode,
+    phase,
+    playlistIds: pids,
+    videoIds: ids,
+    items: normalizeJobItems(normalizedItems, ids),
+    playlistIdx: 0,
+    videoIdx: 0,
+    done: 0,
+    total: Math.max(1, total),
+    ok: 0,
+    failed: 0,
+    okIdsByPlaylist: {},
+    moveOkIds: [],
+    errors: [],
+    result: null,
+    error: '',
+    sourceScope: String(sourceScope || ''),
+    startedAt: Date.now(),
+    cancelRequested: false,
+  });
+  try {
+    await chrome.alarms?.create?.('hxyrule-playlist-add', { periodInMinutes: 1 });
+  } catch (_) {
+    /* optional */
+  }
+  runPlaylistAddJob();
+  return publicPlaylistAddJobStatus(job);
+}
+
+function runPlaylistAddJob() {
+  if (playlistAddJobRunning) return;
+  playlistAddJobRunning = true;
+  (async () => {
+    try {
+      while (true) {
+        let job = await readPlaylistAddJob();
+        if (job.status !== 'running' && job.status !== 'stopping') break;
+        if (job.cancelRequested || job.status === 'stopping' || playlistAddJobCancelFlag) {
+          await writePlaylistAddJob({
+            ...job,
+            status: 'stopped',
+            phase: '',
+            cancelRequested: false,
+            result: playlistAddJobResult(job, { stopped: true }),
+            error: '',
+          });
+          break;
+        }
+
+        const videoIds = Array.isArray(job.videoIds) ? job.videoIds : [];
+        const playlistIds = Array.isArray(job.playlistIds) ? job.playlistIds : [];
+        const mode = job.mode === 'move' ? 'move' : 'save';
+        const phase = job.phase || 'save';
+
+        if (phase === 'save') {
+          const saveList = mode === 'move' ? playlistIds.slice(0, -1) : playlistIds;
+          const pIdx = Number(job.playlistIdx) || 0;
+          const vIdx = Number(job.videoIdx) || 0;
+          if (!saveList.length || pIdx >= saveList.length) {
+            if (mode === 'move') {
+              job = await writePlaylistAddJob({
+                ...job,
+                status: 'running',
+                phase: 'move',
+                videoIdx: 0,
+                error: '',
+              });
+              continue;
+            }
+            if ((Number(job.ok) || 0) === 0 && (Number(job.failed) || 0) > 0) {
+              await writePlaylistAddJob({
+                ...job,
+                status: 'error',
+                phase: '',
+                cancelRequested: false,
+                result: playlistAddJobResult(job),
+                error:
+                  `Save failed for all targets` +
+                  (job.errors?.[0] ? `: ${job.errors[0]}` : ''),
+              });
+              break;
+            }
+            await writePlaylistAddJob({
+              ...job,
+              status: 'done',
+              phase: '',
+              cancelRequested: false,
+              result: playlistAddJobResult(job),
+              error: '',
+            });
+            break;
+          }
+
+          const pid = String(saveList[pIdx]);
+          const vid = String(videoIds[vIdx] || '');
+          if (!vid) {
+            await writePlaylistAddJob({
+              ...job,
+              status: 'error',
+              phase: '',
+              cancelRequested: false,
+              error: 'missing video id in playlist-add job',
+            });
+            break;
+          }
+
+          let added = await addOneViaFavouritesAction(pid, vid);
+          if (!added.ok) {
+            // Keep parity with content fallback path.
+            try {
+              const batch = await addVideosToSitePlaylist(pid, [vid], 'save');
+              if (batch?.ok > 0) added = { ok: true };
+              else if (batch?.errors?.[0]) added = { ok: false, detail: batch.errors[0] };
+            } catch (err) {
+              added = { ok: false, detail: String(err.message || err) };
+            }
+          }
+
+          const okIdsByPlaylist = { ...(job.okIdsByPlaylist || {}) };
+          const errors = Array.isArray(job.errors) ? job.errors.slice() : [];
+          let ok = Number(job.ok) || 0;
+          let failed = Number(job.failed) || 0;
+          if (added.ok) {
+            ok += 1;
+            const list = Array.isArray(okIdsByPlaylist[pid]) ? okIdsByPlaylist[pid].slice() : [];
+            if (!list.includes(vid)) list.push(vid);
+            okIdsByPlaylist[pid] = list;
+          } else {
+            failed += 1;
+            if (errors.length < 8) errors.push(`${vid}: ${added.detail || 'failed'}`);
+          }
+
+          let nextV = vIdx + 1;
+          let nextP = pIdx;
+          if (nextV >= videoIds.length) {
+            nextV = 0;
+            nextP = pIdx + 1;
+          }
+          job = await writePlaylistAddJob({
+            ...job,
+            status: 'running',
+            phase: 'save',
+            playlistIdx: nextP,
+            videoIdx: nextV,
+            done: (Number(job.done) || 0) + 1,
+            ok,
+            failed,
+            okIdsByPlaylist,
+            errors,
+            error: '',
+          });
+          await new Promise((r) => setTimeout(r, 140));
+          continue;
+        }
+
+        if (phase === 'move') {
+          const moveTarget = String(playlistIds[playlistIds.length - 1] || '');
+          if (!isValidPlaylistId(moveTarget)) {
+            await writePlaylistAddJob({
+              ...job,
+              status: 'error',
+              phase: '',
+              cancelRequested: false,
+              error: 'invalid move playlist id',
+            });
+            break;
+          }
+          const vIdx = Number(job.videoIdx) || 0;
+          if (vIdx >= videoIds.length) {
+            const moveOkIds = Array.isArray(job.moveOkIds) ? job.moveOkIds : [];
+            if (!moveOkIds.length && (Number(job.failed) || 0) > 0) {
+              await writePlaylistAddJob({
+                ...job,
+                status: 'error',
+                phase: '',
+                cancelRequested: false,
+                result: playlistAddJobResult(job),
+                error:
+                  `Move failed for all targets` +
+                  (job.errors?.[0] ? `: ${job.errors[0]}` : ''),
+              });
+              break;
+            }
+            const okIdsByPlaylist = { ...(job.okIdsByPlaylist || {}) };
+            okIdsByPlaylist[moveTarget] = moveOkIds.slice();
+            await writePlaylistAddJob({
+              ...job,
+              status: 'done',
+              phase: '',
+              cancelRequested: false,
+              okIdsByPlaylist,
+              result: playlistAddJobResult({
+                ...job,
+                okIdsByPlaylist,
+                moveOkIds,
+              }),
+              error: '',
+            });
+            break;
+          }
+          const vid = String(videoIds[vIdx] || '');
+          if (!vid) {
+            await writePlaylistAddJob({
+              ...job,
+              status: 'error',
+              phase: '',
+              cancelRequested: false,
+              error: 'missing video id in playlist-move job',
+            });
+            break;
+          }
+          const moved = await moveVideosToSitePlaylist(moveTarget, [vid]);
+          job = await readPlaylistAddJob();
+          if (job.cancelRequested || job.status === 'stopping' || playlistAddJobCancelFlag) {
+            const moveOkIds = Array.isArray(job.moveOkIds) ? job.moveOkIds.slice() : [];
+            if (moved.ok && !moveOkIds.includes(vid)) moveOkIds.push(vid);
+            await writePlaylistAddJob({
+              ...job,
+              status: 'stopped',
+              phase: '',
+              cancelRequested: false,
+              moveOkIds,
+              ok: moved.ok ? (Number(job.ok) || 0) + 1 : Number(job.ok) || 0,
+              done: (Number(job.done) || 0) + 1,
+              result: playlistAddJobResult(
+                {
+                  ...job,
+                  moveOkIds,
+                  ok: moved.ok ? (Number(job.ok) || 0) + 1 : Number(job.ok) || 0,
+                  done: (Number(job.done) || 0) + 1,
+                },
+                { stopped: true },
+              ),
+              error: '',
+            });
+            break;
+          }
+          const moveOkIds = Array.isArray(job.moveOkIds) ? job.moveOkIds.slice() : [];
+          const errors = Array.isArray(job.errors) ? job.errors.slice() : [];
+          let ok = Number(job.ok) || 0;
+          let failed = Number(job.failed) || 0;
+          if (moved.ok) {
+            ok += 1;
+            if (!moveOkIds.includes(vid)) moveOkIds.push(vid);
+          } else {
+            failed += 1;
+            if (errors.length < 8) errors.push(`${vid}: ${moved.detail || 'failed'}`);
+          }
+          job = await writePlaylistAddJob({
+            ...job,
+            status: 'running',
+            phase: 'move',
+            videoIdx: vIdx + 1,
+            done: (Number(job.done) || 0) + 1,
+            ok,
+            failed,
+            moveOkIds,
+            errors,
+            error: '',
+          });
+          await new Promise((r) => setTimeout(r, 140));
+          continue;
+        }
+
+        await writePlaylistAddJob({
+          ...job,
+          status: 'error',
+          phase: '',
+          cancelRequested: false,
+          error: `unknown playlist-add phase: ${phase}`,
+        });
+        break;
+      }
+    } catch (err) {
+      const job = await readPlaylistAddJob();
+      if (
+        playlistAddJobCancelFlag ||
+        job.cancelRequested ||
+        job.status === 'stopping' ||
+        /cancelled|stopped/i.test(String(err?.message || err))
+      ) {
+        await writePlaylistAddJob({
+          ...job,
+          status: 'stopped',
+          phase: '',
+          cancelRequested: false,
+          result: playlistAddJobResult(job, { stopped: true }),
+          error: '',
+        });
+      } else {
+        await writePlaylistAddJob({
+          ...job,
+          status: 'error',
+          phase: '',
+          cancelRequested: false,
+          result: playlistAddJobResult(job),
+          error: String(err?.message || err),
+        });
+      }
+    } finally {
+      playlistAddJobRunning = false;
+      const job = await readPlaylistAddJob();
+      if (job.status === 'running' || job.status === 'stopping') {
+        runPlaylistAddJob();
+      } else {
+        try {
+          await chrome.alarms?.clear?.('hxyrule-playlist-add');
+        } catch (_) {
+          /* optional */
+        }
+      }
+    }
+  })();
+}
+
+const FAV_ADD_JOB_KEY = 'hxyruleFavAddJob';
+let favAddJobRunning = false;
+let favAddJobWriteChain = Promise.resolve();
+let favAddJobCancelFlag = false;
+
+function idleFavAddJob() {
+  return {
+    status: 'idle',
+    videoIds: [],
+    items: {},
+    cursor: 0,
+    done: 0,
+    total: 0,
+    ok: 0,
+    failed: 0,
+    okIds: [],
+    errors: [],
+    result: null,
+    error: '',
+    sourceScope: '',
+    startedAt: 0,
+    updatedAt: 0,
+    cancelRequested: false,
+  };
+}
+
+function favAddJobResult(job, { stopped = false } = {}) {
+  return {
+    ok: Number(job.ok) || 0,
+    failed: Number(job.failed) || 0,
+    done: Number(job.done) || 0,
+    total: Number(job.total) || 0,
+    okIds: Array.isArray(job.okIds) ? job.okIds.slice() : [],
+    errors: Array.isArray(job.errors) ? job.errors.slice(0, 8) : [],
+    items: job.items && typeof job.items === 'object' ? job.items : {},
+    sourceScope: String(job.sourceScope || ''),
+    stopped: !!stopped,
+  };
+}
+
+function publicFavAddJobStatus(job) {
+  const j = job || idleFavAddJob();
+  return {
+    status: j.status || 'idle',
+    done: Number(j.done) || 0,
+    total: Number(j.total) || 0,
+    ok: Number(j.ok) || 0,
+    failed: Number(j.failed) || 0,
+    error: j.error || '',
+    result: j.result || null,
+    sourceScope: String(j.sourceScope || ''),
+    startedAt: Number(j.startedAt) || 0,
+    updatedAt: Number(j.updatedAt) || 0,
+    cancelRequested: !!j.cancelRequested,
+  };
+}
+
+async function readFavAddJob() {
+  const data = await chrome.storage.local.get([FAV_ADD_JOB_KEY]);
+  return { ...idleFavAddJob(), ...(data[FAV_ADD_JOB_KEY] || {}) };
+}
+
+async function writeFavAddJob(job) {
+  const run = async () => {
+    const cur = await readFavAddJob();
+    const next = { ...idleFavAddJob(), ...job, updatedAt: Date.now() };
+    if (
+      !isTerminalJobStatus(next.status) &&
+      (cur.cancelRequested || cur.status === 'stopping' || favAddJobCancelFlag)
+    ) {
+      next.cancelRequested = true;
+      next.status = 'stopping';
+      favAddJobCancelFlag = true;
+    }
+    if (isTerminalJobStatus(next.status)) {
+      favAddJobCancelFlag = false;
+    }
+    await chrome.storage.local.set({ [FAV_ADD_JOB_KEY]: next });
+    return next;
+  };
+  const p = favAddJobWriteChain.then(run, run);
+  favAddJobWriteChain = p.then(
+    () => undefined,
+    () => undefined,
+  );
+  return p;
+}
+
+async function getFavAddJobStatus() {
+  const job = await readFavAddJob();
+  if ((job.status === 'running' || job.status === 'stopping') && !favAddJobRunning) {
+    runFavAddJob();
+  }
+  return publicFavAddJobStatus(job);
+}
+
+async function stopFavAddJob() {
+  const job = await readFavAddJob();
+  if (job.status !== 'running' && job.status !== 'stopping') {
+    return publicFavAddJobStatus(job);
+  }
+  favAddJobCancelFlag = true;
+  const next = await writeFavAddJob({
+    ...job,
+    status: 'stopping',
+    cancelRequested: true,
+  });
+  runFavAddJob();
+  return publicFavAddJobStatus(next);
+}
+
+async function startFavAddJob({ videoIds = [], items = {}, sourceScope = '' } = {}) {
+  const current = await readFavAddJob();
+  if (jobIsActive(current)) {
+    runFavAddJob();
+    return publicFavAddJobStatus(current);
+  }
+  const rawIds = [
+    ...new Set((videoIds || []).map((v) => String(v).trim()).filter((v) => /^[1-9]\d*$/.test(v))),
+  ];
+  if (!rawIds.length) throw new Error('no video ids');
+  const normalizedItems = normalizeJobItems(items, rawIds);
+  const ids = await sortVideoIdsByOrdinalAsc(rawIds, normalizedItems);
+  favAddJobCancelFlag = false;
+  const job = await writeFavAddJob({
+    status: 'running',
+    videoIds: ids,
+    items: normalizeJobItems(normalizedItems, ids),
+    cursor: 0,
+    done: 0,
+    total: ids.length,
+    ok: 0,
+    failed: 0,
+    okIds: [],
+    errors: [],
+    result: null,
+    error: '',
+    sourceScope: String(sourceScope || ''),
+    startedAt: Date.now(),
+    cancelRequested: false,
+  });
+  try {
+    await chrome.alarms?.create?.('hxyrule-fav-add', { periodInMinutes: 1 });
+  } catch (_) {
+    /* optional */
+  }
+  runFavAddJob();
+  return publicFavAddJobStatus(job);
+}
+
+function runFavAddJob() {
+  if (favAddJobRunning) return;
+  favAddJobRunning = true;
+  (async () => {
+    try {
+      while (true) {
+        let job = await readFavAddJob();
+        if (job.status !== 'running' && job.status !== 'stopping') break;
+        if (job.cancelRequested || job.status === 'stopping' || favAddJobCancelFlag) {
+          await writeFavAddJob({
+            ...job,
+            status: 'stopped',
+            cancelRequested: false,
+            result: favAddJobResult(job, { stopped: true }),
+            error: '',
+          });
+          break;
+        }
+
+        const videoIds = Array.isArray(job.videoIds) ? job.videoIds : [];
+        const cursor = Number(job.cursor) || 0;
+        if (cursor >= videoIds.length) {
+          if ((Number(job.ok) || 0) === 0 && (Number(job.failed) || 0) > 0) {
+            await writeFavAddJob({
+              ...job,
+              status: 'error',
+              cancelRequested: false,
+              result: favAddJobResult(job),
+              error:
+                `Add to Favorites failed for all ${job.failed}` +
+                (job.errors?.[0] ? `: ${job.errors[0]}` : ''),
+            });
+            break;
+          }
+          await writeFavAddJob({
+            ...job,
+            status: 'done',
+            cancelRequested: false,
+            result: favAddJobResult(job),
+            error: '',
+          });
+          break;
+        }
+
+        const vid = String(videoIds[cursor]);
+        const added = await addOneToMyFavourites(vid);
+        const okIds = Array.isArray(job.okIds) ? job.okIds.slice() : [];
+        const errors = Array.isArray(job.errors) ? job.errors.slice() : [];
+        let ok = Number(job.ok) || 0;
+        let failed = Number(job.failed) || 0;
+        if (added.ok) {
+          ok += 1;
+          if (!okIds.includes(vid)) okIds.push(vid);
+        } else {
+          failed += 1;
+          if (errors.length < 8) errors.push(`${vid}: ${added.detail || 'failed'}`);
+        }
+        await writeFavAddJob({
+          ...job,
+          status: 'running',
+          cursor: cursor + 1,
+          done: cursor + 1,
+          ok,
+          failed,
+          okIds,
+          errors,
+          error: '',
+        });
+        await new Promise((r) => setTimeout(r, 140));
+      }
+    } catch (err) {
+      const job = await readFavAddJob();
+      if (
+        favAddJobCancelFlag ||
+        job.cancelRequested ||
+        job.status === 'stopping' ||
+        /cancelled|stopped/i.test(String(err?.message || err))
+      ) {
+        await writeFavAddJob({
+          ...job,
+          status: 'stopped',
+          cancelRequested: false,
+          result: favAddJobResult(job, { stopped: true }),
+          error: '',
+        });
+      } else {
+        await writeFavAddJob({
+          ...job,
+          status: 'error',
+          cancelRequested: false,
+          result: favAddJobResult(job),
+          error: String(err?.message || err),
+        });
+      }
+    } finally {
+      favAddJobRunning = false;
+      const job = await readFavAddJob();
+      if (job.status === 'running' || job.status === 'stopping') {
+        runFavAddJob();
+      } else {
+        try {
+          await chrome.alarms?.clear?.('hxyrule-fav-add');
+        } catch (_) {
+          /* optional */
+        }
+      }
+    }
+  })();
+}
+
 // Resume queue after SW wake
 chrome.alarms?.create?.('hxyrule-queue', { periodInMinutes: 1 });
 chrome.alarms?.onAlarm?.addListener((alarm) => {
   if (alarm.name === 'hxyrule-queue') runQueueWorker();
   if (alarm.name === 'hxyrule-index') runIndexJob();
   if (alarm.name === 'hxyrule-renumber') runRenumberJob();
+  if (alarm.name === 'hxyrule-playlist-add') runPlaylistAddJob();
+  if (alarm.name === 'hxyrule-fav-add') runFavAddJob();
 });
 runQueueWorker();
 readIndexJob().then((job) => {
@@ -2978,4 +5149,10 @@ readIndexJob().then((job) => {
 }).catch(() => {});
 readRenumberJob().then((job) => {
   if (job.status === 'running' || job.status === 'stopping') runRenumberJob();
+}).catch(() => {});
+readPlaylistAddJob().then((job) => {
+  if (job.status === 'running' || job.status === 'stopping') runPlaylistAddJob();
+}).catch(() => {});
+readFavAddJob().then((job) => {
+  if (job.status === 'running' || job.status === 'stopping') runFavAddJob();
 }).catch(() => {});
