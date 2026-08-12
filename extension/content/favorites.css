@@ -498,7 +498,8 @@ body > .header[data-hxyrule-dark-panel-page="playlist"] {
  * Title chrome row above Command:
  * - Left: brand count chip (My Favorites (N) / NAME (id) : N videos)
  * - Center (playlist only): NAME
- * - Right: Libraries switcher
+ * - Right: site name · Libraries (switcher)
+ * Native My Favorites stays in site `.panel_header` next to Tags (same `.button_fav` shape).
  */
 .hxyrule-topstack--playlist > .hxyrule-playlist-native-title,
 .hxyrule-playlist-native-title,
@@ -540,8 +541,8 @@ body > .header[data-hxyrule-dark-panel-page="playlist"] {
   justify-content: flex-end !important;
 }
 
-/* Site clearfix / spacer nodes inside .headline — keep title + brand + Libraries. */
-.hxyrule-playlist-native-title > *:not(.hxyrule-playlist-title-label):not(.hxyrule-playlist-lib-btn):not(.hxyrule-favcount) {
+/* Site clearfix / spacer nodes inside .headline — keep title + brand + right end. */
+.hxyrule-playlist-native-title > *:not(.hxyrule-playlist-title-label):not(.hxyrule-playlist-lib-btn):not(.hxyrule-favcount):not(.hxyrule-title-end):not(.hxyrule-site-logo) {
   display: none !important;
   height: 0 !important;
   max-height: 0 !important;
@@ -563,12 +564,14 @@ body > .header[data-hxyrule-dark-panel-page="playlist"] {
   clear: none !important;
 }
 
-/* Brand-style pills — title / Libraries / brand share the same control height. */
+/* Brand-style pills — title / Libraries / site / brand share the same control height. */
 .hxyrule-playlist-native-title .hxyrule-playlist-title-label,
 .hxyrule-playlist-native-title .hxyrule-playlist-lib-btn,
 .hxyrule-favorites-lib-row .hxyrule-playlist-lib-btn,
 .hxyrule-playlist-native-title .hxyrule-favcount,
-.hxyrule-favorites-lib-row .hxyrule-favcount {
+.hxyrule-favorites-lib-row .hxyrule-favcount,
+.hxyrule-playlist-native-title .hxyrule-site-logo,
+.hxyrule-favorites-lib-row .hxyrule-site-logo {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -605,7 +608,7 @@ body > .header[data-hxyrule-dark-panel-page="playlist"] {
   flex: 0 1 auto !important;
   position: relative !important;
   z-index: 1 !important;
-  max-width: min(420px, calc(100vw - 320px)) !important;
+  max-width: min(420px, calc(100vw - 420px)) !important;
 }
 
 /* Brand count chip — first-row left end. */
@@ -621,9 +624,53 @@ body > .header[data-hxyrule-dark-panel-page="playlist"] {
   justify-self: start !important;
 }
 
-/* Libraries switcher — first-row right end. */
-.hxyrule-playlist-native-title .hxyrule-playlist-lib-btn,
-.hxyrule-favorites-lib-row .hxyrule-playlist-lib-btn {
+/* Right-end cluster: site name immediately left of Libraries. */
+.hxyrule-playlist-native-title .hxyrule-title-end,
+.hxyrule-favorites-lib-row .hxyrule-title-end {
+  position: absolute !important;
+  top: 50% !important;
+  right: 16px !important;
+  left: auto !important;
+  bottom: auto !important;
+  transform: translateY(-50%) !important;
+  display: inline-flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  width: auto !important;
+  max-width: min(520px, calc(100vw - 48px)) !important;
+  height: auto !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+  visibility: visible !important;
+  z-index: 2 !important;
+  line-height: 0 !important;
+}
+
+.hxyrule-playlist-native-title .hxyrule-title-end .hxyrule-site-logo,
+.hxyrule-favorites-lib-row .hxyrule-title-end .hxyrule-site-logo,
+.hxyrule-playlist-native-title .hxyrule-title-end .hxyrule-playlist-lib-btn,
+.hxyrule-favorites-lib-row .hxyrule-title-end .hxyrule-playlist-lib-btn {
+  position: static !important;
+  top: auto !important;
+  right: auto !important;
+  left: auto !important;
+  bottom: auto !important;
+  transform: none !important;
+  max-width: min(220px, calc(42vw - 24px)) !important;
+}
+
+/* Fallback if Libraries is not yet wrapped in the end cluster. */
+.hxyrule-playlist-native-title > .hxyrule-playlist-lib-btn,
+.hxyrule-favorites-lib-row > .hxyrule-playlist-lib-btn {
   position: absolute !important;
   top: 50% !important;
   right: 16px !important;
@@ -637,7 +684,9 @@ body > .header[data-hxyrule-dark-panel-page="playlist"] {
 .hxyrule-playlist-native-title .hxyrule-playlist-lib-btn:hover,
 .hxyrule-favorites-lib-row .hxyrule-playlist-lib-btn:hover,
 .hxyrule-playlist-native-title .hxyrule-favcount:hover,
-.hxyrule-favorites-lib-row .hxyrule-favcount:hover {
+.hxyrule-favorites-lib-row .hxyrule-favcount:hover,
+.hxyrule-playlist-native-title .hxyrule-site-logo:hover,
+.hxyrule-favorites-lib-row .hxyrule-site-logo:hover {
   border-color: #526074 !important;
   background: linear-gradient(180deg, #323a4c 0%, #2a3140 100%) !important;
   color: #fff !important;
@@ -1072,6 +1121,7 @@ button.hxyrule-favcount:hover {
 }
 
 .hxyrule-dur,
+.hxyrule-nameq,
 .hxyrule-paren-field {
   display: inline-flex;
   align-items: center;
@@ -1094,7 +1144,8 @@ button.hxyrule-favcount:hover {
   box-shadow: none;
 }
 
-.hxyrule-dur__label {
+.hxyrule-dur__label,
+.hxyrule-nameq__label {
   font-weight: 700;
   margin-right: 2px;
   color: #c5ccd6;
@@ -1131,7 +1182,42 @@ button.hxyrule-favcount:hover {
   appearance: none;
 }
 
+.hxyrule-nameq input {
+  box-sizing: border-box;
+  width: 9em;
+  min-width: 6em;
+  max-width: 14em;
+  height: 24px;
+  margin: 0;
+  padding: 0 4px;
+  border: none;
+  border-radius: 0;
+  border-bottom: none;
+  background: transparent;
+  color: #fff;
+  font-size: var(--hxyrule-font, 14px);
+  font-weight: 600;
+  text-align: left;
+  box-shadow: none;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.hxyrule-nameq input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 12px;
+  width: 12px;
+  margin-left: 4px;
+  background: rgba(255, 255, 255, 0.45);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath fill='black' d='M2.1 1.4 6 5.3l3.9-3.9.7.7L6.7 6l3.9 3.9-.7.7L6 6.7l-3.9 3.9-.7-.7L5.3 6 1.4 2.1z'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  cursor: pointer;
+}
+
 .hxyrule-dur input:focus,
+.hxyrule-nameq input:focus,
 .hxyrule-paren-field input:focus,
 .hxyrule-inline-range > input:focus {
   outline: none;
@@ -1145,6 +1231,9 @@ button.hxyrule-favcount:hover {
 .hxyrule-dur input:-webkit-autofill,
 .hxyrule-dur input:-webkit-autofill:hover,
 .hxyrule-dur input:-webkit-autofill:focus,
+.hxyrule-nameq input:-webkit-autofill,
+.hxyrule-nameq input:-webkit-autofill:hover,
+.hxyrule-nameq input:-webkit-autofill:focus,
 .hxyrule-paren-field input:-webkit-autofill,
 .hxyrule-paren-field input:-webkit-autofill:hover,
 .hxyrule-paren-field input:-webkit-autofill:focus,
@@ -1158,6 +1247,7 @@ button.hxyrule-favcount:hover {
 }
 
 .hxyrule-dur input::placeholder,
+.hxyrule-nameq input::placeholder,
 .hxyrule-paren-field input::placeholder,
 .hxyrule-inline-range > input::placeholder {
   color: rgba(255, 255, 255, 0.4);
@@ -2127,6 +2217,7 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-topstack .hxyrule-field-sep,
 .hxyrule-topstack .hxyrule-filter-unit,
 .hxyrule-topstack .hxyrule-dur,
+.hxyrule-topstack .hxyrule-nameq,
 .hxyrule-topstack .hxyrule-paren,
 .hxyrule-topstack .hxyrule-paren-sep,
 .hxyrule-topstack .hxyrule-favcount,
@@ -2145,6 +2236,7 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-topstack .hxyrule-step-name,
 .hxyrule-topstack .hxyrule-field-label,
 .hxyrule-topstack .hxyrule-dur__label,
+.hxyrule-topstack .hxyrule-nameq__label,
 .hxyrule-topstack .hxyrule-paren,
 .hxyrule-topstack .hxyrule-paren-sep {
   font-size: var(--hxyrule-font-label, 13px) !important;
@@ -2434,6 +2526,8 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 .hxyrule-topstack .hxyrule-chip,
 .hxyrule-topstack .hxyrule-dur,
 .hxyrule-topstack .hxyrule-dur__label,
+.hxyrule-topstack .hxyrule-nameq,
+.hxyrule-topstack .hxyrule-nameq__label,
 .hxyrule-topstack .hxyrule-paren,
 .hxyrule-topstack .hxyrule-paren-sep,
 .hxyrule-topstack .hxyrule-paren-field,

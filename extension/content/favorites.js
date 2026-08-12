@@ -218,6 +218,175 @@
     return [...root.querySelectorAll(sel)];
   }
 
+  /** Display name for the title-row site pill (Favorites / playlist only). */
+  function siteBrandName() {
+    const og = String(
+      document.querySelector('meta[property="og:site_name"]')?.getAttribute('content') || '',
+    ).trim();
+    if (og) return og;
+    const host = String(location.hostname || '')
+      .replace(/^www\./i, '')
+      .trim();
+    if (/^rule34video\.com$/i.test(host)) return 'Rule34Video';
+    return host || 'Home';
+  }
+
+  /** Prefer the native logo <a href>; fall back to site origin. Does not mutate the SVG. */
+  function resolveSiteHomeHref() {
+    const svg = qs(document, 'svg.custom-logo, svg.custom-svg.custom-logo');
+    const a = svg?.closest?.('a[href]');
+    if (a) {
+      const raw = String(a.getAttribute('href') || '').trim();
+      if (raw && raw !== '#' && !/^javascript:/i.test(raw)) {
+        try {
+          return a.href || raw;
+        } catch (_) {
+          return raw;
+        }
+      }
+    }
+    return `${location.origin}/`;
+  }
+
+  /**
+   * Site-name pill on the first chrome row, immediately left of Libraries.
+   * Favorites + playlist pages only; does not restyle the native header SVG.
+   */
+  function ensureSiteLogoButton(host) {
+    if (!isFavoritesPage() && !isPlaylistDetailPage()) {
+      qsa(document, `a.${NS}-site-logo, button.${NS}-site-logo`).forEach((el) => el.remove());
+      qsa(document, `.${NS}-title-end`).forEach((el) => el.remove());
+      return null;
+    }
+    if (!host) return null;
+    const name = siteBrandName();
+    const href = resolveSiteHomeHref();
+    let logo =
+      qs(host, `a.${NS}-site-logo`) ||
+      qs(host.parentElement || document, `a.${NS}-site-logo`);
+    if (!logo) {
+      logo = document.createElement('a');
+      logo.className = `${NS}-brand ${NS}-site-logo`;
+      logo.dataset.hxyrule = '1';
+    } else {
+      logo.classList.add(`${NS}-brand`, `${NS}-site-logo`);
+      logo.dataset.hxyrule = '1';
+    }
+    logo.href = href;
+    logo.textContent = name;
+    logo.setAttribute('title', `${name} — Home`);
+    logo.setAttribute('aria-label', `${name} home`);
+    if (logo.parentElement !== host) host.appendChild(logo);
+    return logo;
+  }
+
+  /**
+   * Put a previously adopted My Favorites anchor back beside Tags in `.panel_header`
+   * so it keeps the native `.button_fav` shape (same family as Tags).
+   */
+  function restoreNativeMyFavoritesToPanelHeader(btn) {
+    if (!btn || !(btn instanceof Element)) return;
+    // Drop Libraries click listeners stamped by older builds.
+    let node = btn;
+    if (node.dataset?.hxyruleLibClickBound === '1' || node.dataset?.hxyruleLibBtn === '1') {
+      const clean = node.cloneNode(true);
+      node.replaceWith(clean);
+      node = clean;
+    }
+    // Strip HXYRULE title-row markers — this is a site control again.
+    node.classList.remove(`${NS}-native-fav-nav`, `${NS}-playlist-lib-btn`, `${NS}-hide-native-fav-nav`, `${NS}-brand`);
+    delete node.dataset.hxyrule;
+    delete node.dataset.hxyruleNativeFav;
+    delete node.dataset.hxyruleLibBtn;
+    delete node.dataset.hxyruleLibClickBound;
+    node.removeAttribute('hidden');
+    node.removeAttribute('aria-hidden');
+    ['display', 'visibility', 'pointer-events', 'height', 'max-height', 'opacity'].forEach((p) => {
+      node.style.removeProperty(p);
+    });
+    const href = String(node.getAttribute('href') || node.getAttribute('data-href') || '').trim();
+    if (!/\/my\/favourites\/videos\/?/i.test(href)) {
+      node.setAttribute('href', 'https://rule34video.com/my/favourites/videos/');
+    }
+    node.classList.add('button_fav', 'fav');
+    if (isFavoritesPage()) node.classList.add('active');
+    else node.classList.remove('active');
+
+    const tags = qs(document, 'a.button_fav.tags');
+    const panel = tags?.closest?.('.panel_header') || qs(document, '.panel_header');
+    if (panel) {
+      if (tags && tags.parentElement === panel) {
+        if (tags.nextSibling !== node) tags.after(node);
+      } else if (node.parentElement !== panel) {
+        panel.appendChild(node);
+      }
+    }
+  }
+
+  /** Undo title-row adoption from older builds; keep site My Favorites next to Tags. */
+  function releaseTitleRowMyFavorites() {
+    qsa(document, `a.${NS}-native-fav-nav, a.${NS}-playlist-lib-btn.button_fav`).forEach((a) => {
+      restoreNativeMyFavoritesToPanelHeader(a);
+    });
+    // Un-hide any leftover site fav links we previously stamped.
+    qsa(document, `a.button_fav.fav.${NS}-hide-native-fav-nav, a.button_fav.${NS}-hide-native-fav-nav`).forEach(
+      (a) => {
+        if (!/\/my\/favourites\/videos\/?/i.test(String(a.getAttribute('href') || a.getAttribute('data-href') || ''))) {
+          return;
+        }
+        a.classList.remove(`${NS}-hide-native-fav-nav`);
+        a.removeAttribute('hidden');
+        a.removeAttribute('aria-hidden');
+        ['display', 'visibility', 'pointer-events'].forEach((p) => a.style.removeProperty(p));
+      },
+    );
+  }
+
+  /**
+   * Right-end cluster: [site name] [Libraries switcher].
+   * Native My Favorites stays in `.panel_header` next to Tags (site shape).
+   */
+  function ensureTitleRowEnd(row) {
+    if (!row || (!isFavoritesPage() && !isPlaylistDetailPage())) return null;
+    releaseTitleRowMyFavorites();
+    let end = qs(row, `.${NS}-title-end`);
+    if (!end) {
+      end = document.createElement('div');
+      end.className = `${NS}-title-end`;
+      end.dataset.hxyrule = '1';
+    }
+    if (end.parentElement !== row) row.appendChild(end);
+
+    // Pull orphan controls that older layout left as direct row children.
+    [...row.children].forEach((child) => {
+      if (child === end) return;
+      if (
+        child.classList?.contains(`${NS}-playlist-lib-btn`) ||
+        child.classList?.contains(`${NS}-site-logo`)
+      ) {
+        end.appendChild(child);
+      }
+    });
+    // Drop any fav control still stuck on the title row.
+    qsa(end, `a.${NS}-native-fav-nav, a.button_fav.fav`).forEach((a) => {
+      restoreNativeMyFavoritesToPanelHeader(a);
+    });
+
+    const logo = ensureSiteLogoButton(end);
+    const lib = ensurePlaylistLibraryButton(end, logo);
+    const ordered = [logo, lib].filter(Boolean);
+    ordered.forEach((el, i) => {
+      if (el.parentElement !== end) end.appendChild(el);
+      if (i === 0) {
+        if (end.firstElementChild !== el) end.insertBefore(el, end.firstChild);
+      } else {
+        const prev = ordered[i - 1];
+        if (prev.nextSibling !== el) prev.after(el);
+      }
+    });
+    return end;
+  }
+
   function parsePageFromParams(raw) {
     if (!raw) return null;
     const s = String(raw);
@@ -1177,8 +1346,8 @@
     let label = ensurePlaylistTitleLabel(hl);
     label = ensurePlaylistTitleLink(hl, label, href);
     syncPlaylistTitleDisplay(hl, label);
-    const libBtn = ensurePlaylistLibraryButton(hl, label);
-    compactPlaylistHeadline(hl, label, libBtn);
+    ensureTitleRowEnd(hl);
+    compactPlaylistHeadline(hl, label);
     // Keep title inside the fixed stack so it stays above Match/Select.
     if (hl.parentElement !== stack || stack.firstElementChild !== hl) {
       stack.insertBefore(hl, stack.firstChild);
@@ -1529,14 +1698,20 @@
   }
 
   /**
-   * Title-row My Favorites pill. Opens the library switcher; native a.button_fav
-   * copies are hidden so they do not reappear under the cards.
+   * Title-row Libraries pill. Opens the library switcher.
+   * Native My Favorites stays in `.panel_header` next to Tags — do not reuse it here.
    * @param {Element} hl row host
-   * @param {Element|null} anchor optional sibling to place after (playlist title)
+   * @param {Element|null} anchor optional sibling to place after (site logo)
    */
   function ensurePlaylistLibraryButton(hl, anchor = null) {
     if (!hl) return null;
-    let btn = qs(hl, `button.${NS}-playlist-lib-btn, a.${NS}-playlist-lib-btn`);
+    // Prefer a dedicated Libraries control — never reuse the native fav <a>.
+    let btn =
+      qs(hl, `button.${NS}-playlist-lib-btn`) ||
+      [...qsa(hl, `a.${NS}-playlist-lib-btn`)].find(
+        (el) => !el.classList.contains('button_fav') && el.dataset?.hxyruleNativeFav !== '1',
+      ) ||
+      null;
     if (!btn) {
       btn = document.createElement('button');
       btn.type = 'button';
@@ -1552,15 +1727,6 @@
         openLibrarySwitcher().catch(() => {});
       });
     } else {
-      btn.classList.add(`${NS}-playlist-lib-btn`);
-      btn.dataset.hxyrule = '1';
-      btn.dataset.hxyruleLibBtn = '1';
-      btn.removeAttribute('hidden');
-      btn.style.removeProperty('display');
-      btn.style.removeProperty('visibility');
-      btn.textContent = 'Libraries';
-      btn.setAttribute('title', 'Open Favorites and playlists');
-      btn.setAttribute('aria-label', 'Libraries');
       // Promote a relocated <a> (older builds) to a stable button control.
       if (btn.tagName === 'A') {
         const next = document.createElement('button');
@@ -1578,6 +1744,24 @@
         });
         btn.replaceWith(next);
         btn = next;
+      } else {
+        btn.classList.add(`${NS}-playlist-lib-btn`);
+        btn.dataset.hxyrule = '1';
+        btn.dataset.hxyruleLibBtn = '1';
+        btn.removeAttribute('hidden');
+        btn.style.removeProperty('display');
+        btn.style.removeProperty('visibility');
+        btn.textContent = 'Libraries';
+        btn.setAttribute('title', 'Open Favorites and playlists');
+        btn.setAttribute('aria-label', 'Libraries');
+        if (btn.dataset.hxyruleLibClickBound !== '1') {
+          btn.dataset.hxyruleLibClickBound = '1';
+          btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openLibrarySwitcher().catch(() => {});
+          });
+        }
       }
     }
     if (anchor && hl.contains(anchor)) {
@@ -1585,28 +1769,20 @@
     } else if (btn.parentElement !== hl) {
       hl.appendChild(btn);
     }
-    hideNativeMyFavoritesNavLinks(btn);
     return btn;
   }
 
-    /** Hide site header My Favorites anchors (they live under the card grid). */
-  function hideNativeMyFavoritesNavLinks(keep = null) {
-    qsa(document, 'a.button_fav').forEach((a) => {
-      if (keep && (a === keep || keep.contains?.(a))) return;
-      if (a.classList.contains(`${NS}-playlist-lib-btn`)) return;
-      if (!/\/my\/favourites\/videos\/?/i.test(String(a.getAttribute('href') || ''))) return;
-      a.classList.add(`${NS}-hide-native-fav-nav`);
-      a.setAttribute('hidden', 'true');
-      a.setAttribute('aria-hidden', 'true');
-      a.style.setProperty('display', 'none', 'important');
-      a.style.setProperty('visibility', 'hidden', 'important');
-      a.style.setProperty('pointer-events', 'none', 'important');
-    });
+  /**
+   * Keep site My Favorites in `.panel_header` (logo / Tags row) visible and
+   * native-shaped. Older builds hid or relocated it into the title chrome.
+   */
+  function hideNativeMyFavoritesNavLinks(_keep = null) {
+    releaseTitleRowMyFavorites();
   }
 
   /**
-   * Favorites page: same chrome row as playlist (My Favorites on the right),
-   * without a centered NAME pill.
+   * Favorites page: same chrome row as playlist (Libraries on the right),
+   * without a centered NAME pill. Native My Favorites stays beside Tags.
    */
   function placeFavoritesLibraryTitleRow() {
     qs(document, `.${NS}-playlist-page-title`)?.remove();
@@ -1623,7 +1799,7 @@
       row.dataset.hxyrule = '1';
       row.setAttribute('aria-label', 'My libraries');
     }
-    ensurePlaylistLibraryButton(row, null);
+    ensureTitleRowEnd(row);
     hideNativeMyFavoritesNavLinks();
     row.style.setProperty('border', 'none', 'important');
     row.style.setProperty('border-bottom', '1px solid #4a5563', 'important');
@@ -1637,18 +1813,32 @@
   /**
    * Site `.headline` often keeps clearfix / spacer siblings (and whitespace
    * text nodes) that inflate the hit-box with a blank row under the title.
-   * Keep only the title pill + My Favorites pill; 8px inset above and below.
+   * Keep only the title pill + right-end cluster (site + Libraries) + brand.
    */
   function compactPlaylistHeadline(hl, label, libBtn = null) {
     if (!hl || !label) return;
-    const keepLib = libBtn || qs(hl, `.${NS}-playlist-lib-btn`);
+    const keepEnd = qs(hl, `.${NS}-title-end`) || null;
+    const keepLib = keepEnd
+      ? qs(keepEnd, `.${NS}-playlist-lib-btn`)
+      : libBtn || qs(hl, `.${NS}-playlist-lib-btn`);
+    const keepLogo = keepEnd ? qs(keepEnd, `.${NS}-site-logo`) : qs(hl, `.${NS}-site-logo`);
     const keepFav = qs(hl, `.${NS}-favcount`);
     [...hl.childNodes].forEach((node) => {
-      if (node === label || node === keepLib || node === keepFav) return;
+      if (
+        node === label ||
+        node === keepEnd ||
+        node === keepLib ||
+        node === keepLogo ||
+        node === keepFav
+      ) {
+        return;
+      }
       if (node.nodeType === Node.ELEMENT_NODE) {
         if (
           node.contains?.(label) ||
+          (keepEnd && node.contains?.(keepEnd)) ||
           (keepLib && node.contains?.(keepLib)) ||
+          (keepLogo && node.contains?.(keepLogo)) ||
           (keepFav && node.contains?.(keepFav))
         ) {
           return;
@@ -1668,12 +1858,13 @@
         node.textContent = '';
       }
     });
-    // DOM order: brand (left) → NAME → Libraries (right).
+    // DOM order: brand (left) → NAME → [site | Libraries] (right).
     if (keepFav && hl.firstElementChild !== keepFav) {
       hl.insertBefore(keepFav, hl.firstChild);
     }
-    if (keepLib && label.nextSibling !== keepLib) {
-      label.after(keepLib);
+    const right = keepEnd || keepLib;
+    if (right && label.nextSibling !== right) {
+      label.after(right);
     }
     // Inline overrides beat site rules that set a tall min-height on .headline.
     hl.style.setProperty('min-height', '0', 'important');
@@ -3891,7 +4082,7 @@
 
   /**
    * Fixed top toolbar (Hentai-style rails):
-   * - Title chrome: brand (left) · NAME (playlist center) · Libraries (right)
+   * - Title chrome: brand (left) · NAME (playlist center) · site + Libraries (right)
    * - Command: Sync/Queue/Index/Edit · status (collapsible with Match/View/Select)
    * - Match · View · Select (collapsible)
    * - Nav: Pages · Jump
@@ -4718,6 +4909,8 @@
   let indexRunning = false;
   /** '' | 'crawl' (Build/Rebuild) | 'sex' (Tag sex / Retag sex). */
   let indexJobKind = '';
+  /** True while a sex-delta (incremental) Tag sex job is active. */
+  let indexSexDelta = false;
   let indexPollTimer = null;
   let lastIndexStats = null; // { done, total } pages after last successful index build
   let indexProgressLabel = ''; // e.g. "3/100" while background index runs
@@ -4749,11 +4942,13 @@
     cloudOn: true,
     favoriteOn: true,
     playlistOn: true,
-    /** Site top filter groups (index sexGroup from category_group_id). */
+    /** Futa/Straight from detail-page futanari tags (index sexGroup). */
     futaOn: true,
     straightOn: true,
     durMinMin: '',
     durMaxMin: '',
+    /** Contiguous substring on title + Favorites seq prefix (case-insensitive). */
+    titleQuery: '',
     matchedIds: null, // Set | null (null = filter inactive)
     matchCount: null,
     active: false,
@@ -4775,6 +4970,8 @@
   let viewMode = 'compact';
   /** True while boot (or explicit apply) is restoring the persisted View. */
   let viewRestorePending = false;
+  /** True while favorites/playlist boot is still running (before first paint settle). */
+  let bootInProgress = false;
   /** Persisted Select page-range inputs (survive control rebuilds). */
   let selectStartSaved = '';
   let selectEndSaved = '';
@@ -4833,6 +5030,7 @@
       straightOn: true,
       durMinMin: '',
       durMaxMin: '',
+      titleQuery: '',
       viewMode: 'compact',
       selectStart: '',
       selectEnd: '',
@@ -4850,6 +5048,9 @@
   function uiViewMode() {
     if (viewRestorePending || filterRunning) return normalizeViewMode(viewMode);
     if (compactViewActive) return 'compact';
+    // Persisted Compact intent wins over a stale active match set (boot used to
+    // highlight Show matches when Compact mount failed after setting active).
+    if (normalizeViewMode(viewMode) === 'compact') return 'compact';
     if (filterState.active) return 'matches';
     return 'all';
   }
@@ -4897,6 +5098,14 @@
     const range = readSelectRangeFromDom();
     selectStartSaved = range.selectStart;
     selectEndSaved = range.selectEnd;
+    // Prefer live Compact DOM over a stale viewMode / active-match pair.
+    const liveMode = compactViewActive
+      ? 'compact'
+      : normalizeViewMode(viewMode) === 'compact'
+        ? 'compact'
+        : filterState.active
+          ? 'matches'
+          : normalizeViewMode(viewMode);
     return {
       localOn: !!filterState.localOn,
       cloudOn: !!filterState.cloudOn,
@@ -4906,7 +5115,8 @@
       straightOn: !!filterState.straightOn,
       durMinMin: String(filterState.durMinMin || ''),
       durMaxMin: String(filterState.durMaxMin || ''),
-      viewMode: normalizeViewMode(viewMode),
+      titleQuery: String(filterState.titleQuery || ''),
+      viewMode: normalizeViewMode(liveMode),
       selectStart: selectStartSaved,
       selectEnd: selectEndSaved,
       compactSortKey: parseCompactSortKey(compactSortKey).key,
@@ -4942,6 +5152,8 @@
     const maxIn = qs(bar, '[data-role="dur-max"]');
     if (minIn) minIn.value = filterState.durMinMin || '';
     if (maxIn) maxIn.value = filterState.durMaxMin || '';
+    const titleIn = qs(bar, '[data-role="title-query"]');
+    if (titleIn) titleIn.value = filterState.titleQuery || '';
     const startIn = qs(bar, '[data-role="select-start"]');
     const endIn = qs(bar, '[data-role="select-end"]');
     if (startIn) startIn.value = selectStartSaved || '';
@@ -4972,6 +5184,7 @@
     }
     filterState.durMinMin = String(f.durMinMin || '');
     filterState.durMaxMin = String(f.durMaxMin || '');
+    filterState.titleQuery = String(f.titleQuery || '');
     compactSortKey = parseCompactSortKey(f.compactSortKey).key;
     toolbarMiddleCollapsed = !!f.toolbarMiddleCollapsed;
     viewMode = normalizeViewMode(f.viewMode);
@@ -5033,7 +5246,13 @@
       if (gen !== restoreViewGeneration) return;
       viewRestorePending = false;
       // If Compact restore failed, drop the pending native hide so the page is usable.
+      // Also clear any half-applied match state so UI does not stick on Show matches.
       if (mode === 'compact' && !compactViewActive) {
+        filterState.active = false;
+        filterState.matchedIds = null;
+        filterState.matchCount = null;
+        viewDeps = null;
+        viewMode = 'compact';
         document.documentElement.classList.remove(`${NS}-compact-active`);
         clearPendingNativeListHide();
         favoritesListEl()?.classList?.remove(`${NS}-native-thumbs-hidden`);
@@ -5050,6 +5269,34 @@
   /** Idle Tag sex button: first baseline vs wipe-and-retag escape hatch. */
   function sexIdleLabel() {
     return indexHasSexBaseline(favIndexCache?.videos) ? 'Retag sex' : 'Tag sex';
+  }
+
+  /** User-facing live status for Tag sex (no internal “delta” jargon). */
+  function sexTaggingLiveLabel({
+    continueOnly = false,
+    listChanged = false,
+    left = 0,
+    retagAll = false,
+  } = {}) {
+    if (retagAll) return 'Retagging all…';
+    if (continueOnly) {
+      const n = formatFavCount(Math.max(0, Number(left) || 0));
+      return listChanged
+        ? `List changed · tagging new + remaining (${n})…`
+        : `Continuing sex tags (${n} left)…`;
+    }
+    return 'Tagging sex…';
+  }
+
+  async function confirmRetagAllSex() {
+    return confirmModal({
+      title: 'Retag all videos?',
+      body: 'Clears all Futa/Straight labels and rebuilds them from each video page.',
+      okLabel: 'Retag all',
+      cancelLabel: 'Cancel',
+      danger: true,
+      modern: true,
+    });
   }
 
   function parseCompactSortKey(key) {
@@ -5349,6 +5596,8 @@
     e.stopPropagation();
     toggleToolbarMiddle();
   }
+  // Handler existed but was never bound — F did nothing until this listener.
+  document.addEventListener('keydown', onToggleToolbarHotkey, true);
   /**
    * Snapshot of a live native card (clone + pixel metrics) taken before the
    * native grid is hidden. Reused across compact pages so getComputedStyle on
@@ -5430,6 +5679,31 @@
   /** True once a full Tag (or any prior sex label) exists on this index. */
   function indexHasSexBaseline(videos) {
     return countSexTagged(videos) > 0;
+  }
+
+  /** Same fingerprint as background sexMembershipSigFromVideos (id set, not titles). */
+  function sexMembershipSigFromVideos(videos) {
+    const ids = (Array.isArray(videos) ? videos : [])
+      .map((v) => String(v?.videoId || '').trim())
+      .filter((id) => /^[1-9]\d*$/.test(id));
+    ids.sort();
+    let h = 2166136261;
+    for (const id of ids) {
+      for (let i = 0; i < id.length; i += 1) {
+        h ^= id.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      h ^= 124;
+      h = Math.imul(h, 16777619);
+    }
+    return `${ids.length}:${(h >>> 0).toString(16)}`;
+  }
+
+  /** True when index membership drifted since last Tag sex pause (id set). */
+  function sexMembershipChangedSincePause(videos, storedSig) {
+    const prev = String(storedSig || '').trim();
+    if (!prev) return false;
+    return prev !== sexMembershipSigFromVideos(videos);
   }
 
   function indexVideosHaveSexGroups(videos) {
@@ -5541,6 +5815,8 @@
   }
 
   function invalidateFrozenViewIfDiskChanged() {
+    // Boot restores Compact before Scan; queue status must not wipe that View.
+    if (bootInProgress) return;
     if (!filterState.active && !filterState.matchedIds && !compactViewActive) return;
     if (viewDeps && !viewDeps.disk) return;
     invalidateFrozenView();
@@ -5678,9 +5954,11 @@
       videos: list,
       scope: scope || 'favorites',
     };
-    await send('FAV_INDEX_SET', { index: next, scope: scope || 'favorites' });
+    // Omit sexMembershipSig so background setFavIndex keeps the Tag sex pause fingerprint.
+    const saved =
+      (await send('FAV_INDEX_SET', { index: next, scope: scope || 'favorites' })) || next;
     if (scope === indexScopeKey()) {
-      favIndexCache = next;
+      favIndexCache = saved;
       listIndexDirty = false;
       lastIndexStats = lastIndexStats || null;
       // Never raise brand / title totals from a bloated index length.
@@ -5695,7 +5973,7 @@
       myFavIdSet = new Set(list.map((v) => String(v.videoId)));
       favoritesIndexDirty = false;
       if (!isPlaylistDetailPage()) {
-        favIndexCache = next;
+        favIndexCache = saved;
         listIndexDirty = false;
         const siteLock = optionalNonNegInt(siteNativeTitleCount);
         applyKnownLibraryTotal(
@@ -5710,7 +5988,7 @@
       playlistIndexesDirty = false;
     }
     updateFilterBarLabels();
-    return next;
+    return saved;
   }
 
   /** Remove ids from a stored list index. Never writes a brand-new partial index. */
@@ -5848,6 +6126,10 @@
   /** Disk presence for Local/Not local — scan only when missing or marked dirty. */
   async function ensureFreshDiskForMatch() {
     if (diskFilterIsAll()) return;
+    // Boot paints Compact from the list index first; outer doScan re-applies
+    // Local/Not-local after disk marks exist. Nested Scan here made restore
+    // slower than Show-all → click Compact.
+    if (bootInProgress) return;
     if (!scanned || !localIdSet.size || diskIndexDirty) {
       await doScan();
     }
@@ -5860,6 +6142,8 @@
    */
   async function ensureFreshListIndexForMatch() {
     await loadFavIndexCache();
+    // Boot: never block Compact on crawl/refresh — use the stored index as-is.
+    if (bootInProgress) return;
     // Drift must use title/pager — not detectFavoritesTotal (which prefers index).
     const liveTotal = liveLibraryTotalForDrift();
     const indexed = favIndexCache?.videos?.length || 0;
@@ -5876,7 +6160,7 @@
   }
 
   /** Favorites index used by Favorited/Unfavorited (and Prune keep-set). */
-  async function ensureFreshFavoritesIndexForMatch({ progressEl = null, forceRebuild = false } = {}) {
+  async function ensureFreshFavoritesIndexForMatch({ forceRebuild = false } = {}) {
     if (forceRebuild || favoritesIndexDirty) {
       myFavIdSet = null;
     }
@@ -5889,11 +6173,10 @@
       myFavIdSet = new Set(favIdx.videos.map((v) => String(v.videoId)));
       return myFavIdSet;
     }
-    const applyBtn =
-      progressEl ||
-      qs(document, `.${NS}-controls [data-act="filter-apply"]`) ||
-      qs(document, `.${NS}-filterbar [data-act="filter-apply"]`);
-    await buildFavoritesIndexRemote({ progressEl: applyBtn });
+    // Boot Compact must not wait on a Favorites crawl — use whatever we have.
+    if (bootInProgress) return myFavIdSet || new Set();
+    // Progress stays on status / Index — never overwrite Compact / Show matches.
+    await buildFavoritesIndexRemote();
     favoritesIndexDirty = false;
     return myFavIdSet;
   }
@@ -6208,8 +6491,12 @@
       if (sexRunning) {
         idxSex.disabled = true;
         idxSex.textContent = indexProgressLabel
-          ? `Tagging (${indexProgressLabel})`
-          : 'Tagging…';
+          ? indexSexDelta
+            ? `Tagging remaining (${indexProgressLabel})`
+            : `Tagging (${indexProgressLabel})`
+          : indexSexDelta
+            ? 'Continuing sex tags…'
+            : 'Tagging…';
         idxSex.title = 'Tag sex / Retag sex running (survives refresh; Stop to cancel).';
       } else if (crawlRunning) {
         idxSex.disabled = true;
@@ -6229,10 +6516,10 @@
         idxSex.textContent = sexVerb;
         const left = countSexUntagged(favIndexCache?.videos);
         idxSex.title = left
-          ? `Sex tags incomplete (${formatFavCount(left)} untagged). ${sexVerb} wipe-and-retag escape hatch (does not re-crawl list membership).`
+          ? `Sex tags incomplete (${formatFavCount(left)} untagged). ${sexVerb} continues only the remaining videos (and any new index adds since pause; removed ids are skipped).`
           : indexHasSexBaseline(favIndexCache?.videos)
-            ? 'Retag sex: full wipe-and-retag of Futa/Straight from the site top filter. Small adds auto-tag; use when auto-tag is incomplete.'
-            : 'Tag sex: full Futa/Straight baseline from the site top filter. Small adds auto-tag afterward.';
+            ? 'Wipe and re-check every video. You’ll confirm first.'
+            : 'Tag sex: check each video detail for futanari tag (yes=Futa, no=Straight). Small adds auto-tag afterward.';
       }
     }
     // Keep Renumber grey while index runs even if only the filter bar refreshed.
@@ -6453,7 +6740,7 @@
               <button type="button" class="${NS}-btn" data-act="index-stop" hidden>Stop</button>
             </div>
             <div class="${NS}-btn-pair" role="group" aria-label="Tag sex controls">
-              <button type="button" class="${NS}-btn" data-act="index-sex" title="Tag sex: full Futa/Straight baseline from the site top filter. Becomes Retag sex after a baseline exists. Build index first; small adds auto-tag afterward.">Tag sex</button>
+              <button type="button" class="${NS}-btn" data-act="index-sex" title="Tag sex: check each video detail for futanari tag (yes=Futa, no=Straight). Becomes Retag sex after a baseline exists (confirm before wipe). Build index first; small adds auto-tag afterward.">Tag sex</button>
               <button type="button" class="${NS}-btn" data-act="index-sex-stop" hidden>Stop</button>
             </div>${renumberBtn}
           </section>
@@ -6479,8 +6766,8 @@
           <button type="button" class="${NS}-chip is-active" data-act="filter-favorite">${coll.member}</button>
           <button type="button" class="${NS}-chip is-active" data-act="filter-playlist">${coll.nonMember}</button>
           <span class="${NS}-rail-sep" aria-hidden="true"></span>
-          <button type="button" class="${NS}-chip is-active" data-act="filter-futa" title="Site top filter Futa (category_group_id=15). Both Futa+Straight on = no sex restriction; turn Straight off for Futa-only. Needs Tag sex / Retag sex after Build.">Futa</button>
-          <button type="button" class="${NS}-chip is-active" data-act="filter-straight" title="Site top filter Straight (category_group_id=2109). Both Futa+Straight on = no sex restriction; turn Futa off for Straight-only. Needs Tag sex / Retag sex after Build.">Straight</button>
+          <button type="button" class="${NS}-chip is-active" data-act="filter-futa" title="Videos whose detail page has the futanari tag. Both Futa+Straight on = no sex restriction; turn Straight off for Futa-only. Needs Tag sex / Retag sex after Build.">Futa</button>
+          <button type="button" class="${NS}-chip is-active" data-act="filter-straight" title="Videos whose detail page has no futanari tag. Both Futa+Straight on = no sex restriction; turn Futa off for Straight-only. Needs Tag sex / Retag sex after Build.">Straight</button>
           <span class="${NS}-rail-sep" aria-hidden="true"></span>
           <label class="${NS}-dur">
             <span class="${NS}-dur__label">Duration</span>
@@ -6489,6 +6776,10 @@
             <span class="${NS}-paren-sep">–</span>
             <input type="number" min="0" step="1" inputmode="numeric" placeholder="max" data-role="dur-max" aria-label="Duration max" />
             <span class="${NS}-paren">)</span>
+          </label>
+          <label class="${NS}-nameq" title="Match title or Favorites seq prefix (N——…) as a continuous substring (case-insensitive)">
+            <span class="${NS}-nameq__label">Name</span>
+            <input type="search" data-role="title-query" placeholder="contains…" aria-label="Video name or seq contains" autocomplete="off" spellcheck="false" />
           </label>
         </div>
       </div>
@@ -6536,6 +6827,8 @@
     const maxIn = qs(box, '[data-role="dur-max"]');
     if (minIn) minIn.value = filterState.durMinMin;
     if (maxIn) maxIn.value = filterState.durMaxMin;
+    const titleIn = qs(box, '[data-role="title-query"]');
+    if (titleIn) titleIn.value = filterState.titleQuery || '';
     const startIn = qs(box, '[data-role="select-start"]');
     const endIn = qs(box, '[data-role="select-end"]');
     if (startIn) startIn.value = selectStartSaved || '';
@@ -6546,6 +6839,7 @@
     updateToolbarLabels();
     wirePageRangeInputs(box);
     wireDurationFilterInputs(box);
+    wireTitleQueryFilterInput(box);
     syncPageRangePlaceholders();
     return box;
   }
@@ -6564,24 +6858,32 @@
     placeControls(bar);
   }
 
-  /** Sex enrich UI: list-page progress while reading card badges. */
+  /** Sex enrich UI: detail-tag progress (futanari → Futa, else Straight). */
   function formatSexIndexProgress(st) {
     const raw = String(st?.sexFilterLabel || '').toLowerCase();
     const fp = Number(st?.sexFilterPage) || 0;
-    const total = Math.max(
+    // Detail crawl: sexFilterMaxPage is the id count (delta = remaining only).
+    // Do not mix in listMaxPage (favorites page count) — that made Retag look like 0/2xxx wipe.
+    const detailTotal = Math.max(1, Number(st?.sexFilterMaxPage) || 0, fp || 1);
+    const listTotal = Math.max(
       1,
       Number(st?.listMaxPage) || 0,
       Number(st?.sexFilterMaxPage) || 0,
       fp || 1,
     );
-    if (raw === 'cards' || raw === 'badges' || raw === 'list') {
-      return fp > 0 ? `${fp}/${total}` : '…';
+    // Detail futanari crawl, or legacy badge / list-filter jobs.
+    if (
+      raw === 'detail' ||
+      raw === 'tags' ||
+      raw === 'futanari'
+    ) {
+      return fp > 0 ? `${fp}/${detailTotal}` : '…';
     }
-    // Legacy Futa/Straight step labels (older jobs).
-    const step = Number(st?.page) || 0;
-    const name =
-      raw === 'straight' ? 'Straight' : raw === 'futa' ? 'Futa' : step === 2 ? 'Straight' : 'Futa';
-    if (fp > 0) return `${name} · ${fp}/${total}`;
+    if (raw === 'cards' || raw === 'badges' || raw === 'list') {
+      return fp > 0 ? `${fp}/${listTotal}` : '…';
+    }
+    const name = raw === 'straight' ? 'Straight' : 'Futa';
+    if (fp > 0) return `${name} · ${fp}/${listTotal}`;
     return name;
   }
 
@@ -6646,12 +6948,15 @@
     if (st.scope === indexScopeKey()) {
       if (active && indexJobIsSex(st)) {
         indexJobKind = 'sex';
+        indexSexDelta = String(st.mode || '') === 'sex-delta';
         indexProgressLabel = formatSexIndexProgress(st);
       } else if (active) {
         indexJobKind = 'crawl';
+        indexSexDelta = false;
         indexProgressLabel = formatListIndexProgress(st);
       } else {
         indexJobKind = '';
+        indexSexDelta = false;
         indexProgressLabel = '';
       }
       indexRunning = active;
@@ -6659,10 +6964,11 @@
       return;
     }
     // Job belongs to another list — keep it running, but hide Index Stop here.
-    if (indexRunning || indexProgressLabel || indexJobKind) {
+    if (indexRunning || indexProgressLabel || indexJobKind || indexSexDelta) {
       indexRunning = false;
       indexProgressLabel = '';
       indexJobKind = '';
+      indexSexDelta = false;
       updateFilterBarLabels();
     }
   }
@@ -6745,6 +7051,7 @@
         indexRunning = false;
         indexProgressLabel = '';
         indexJobKind = '';
+        indexSexDelta = false;
         updateFilterBarLabels();
         return st;
       }
@@ -6765,11 +7072,12 @@
     const active = st && (st.status === 'running' || st.status === 'stopping');
     if (!active) {
       stopIndexPoll();
-      if (indexRunning || indexProgressLabel || indexJobKind) {
+      if (indexRunning || indexProgressLabel || indexJobKind || indexSexDelta) {
         await adoptIndexJobResult(st);
         indexRunning = false;
         indexProgressLabel = '';
         indexJobKind = '';
+        indexSexDelta = false;
         updateFilterBarLabels();
       }
       return st;
@@ -6859,7 +7167,7 @@
 
   /**
    * After index adds: if a sex baseline exists, auto-classify new ids.
-   * ≤ SEX_AUTO_PAGE1_MAX → Futa/Straight page-1 only.
+   * ≤ SEX_AUTO_PAGE1_MAX → detail futanari checks (quiet).
    * Larger → sex-delta job with progress (Tag remains the full escape hatch).
    */
   async function scheduleSexAutoAfterAdd(scope, addedIds) {
@@ -6956,11 +7264,15 @@
       if (scopeKey === indexScopeKey()) {
         indexRunning = true;
         indexJobKind = 'sex';
+        indexSexDelta = true;
         applyIndexJobProgress(st);
         updateFilterBarLabels();
         startIndexStatusPoll();
         setLiveStatus(
-          `Tagging sex (delta · ${formatFavCount(ids.length)})…`,
+          sexTaggingLiveLabel({
+            continueOnly: true,
+            left: ids.length,
+          }),
         );
       }
     } catch (err) {
@@ -6975,8 +7287,10 @@
   /**
    * Match Futa/Straight chips need sexGroup on the list index.
    * No baseline → full Tag; some untagged → sex-delta only.
+   * Membership drift since pause: still delta on current untagged (new ids included;
+   * removed ids are already gone from the index).
    */
-  async function ensureSexGroupsInListIndex({ progressEl = null } = {}) {
+  async function ensureSexGroupsInListIndex() {
     await loadFavIndexCache();
     const videos = favIndexCache?.videos || [];
     if (!videos.length) {
@@ -6991,19 +7305,15 @@
 
     const scope = indexScopeKey();
     const delta = tagged > 0 && !corrupt;
+    const listChanged = delta
+      ? sexMembershipChangedSincePause(videos, favIndexCache?.sexMembershipSig)
+      : false;
     const targetIds = delta
       ? videos
           .filter((v) => !videoSexGroupSet(v).size)
           .map((v) => String(v.videoId || '').trim())
           .filter(Boolean)
       : [];
-    const label = corrupt
-      ? 'Retagging sex…'
-      : delta
-        ? 'Tagging sex (delta)…'
-        : 'Tagging sex…';
-    if (progressEl) progressEl.textContent = label;
-    setLiveStatus(label);
     let st = await send('INDEX_JOB_STATUS');
     if (st?.status === 'running' || st?.status === 'stopping') {
       if (st.scope !== scope) {
@@ -7012,6 +7322,13 @@
         );
       }
     } else {
+      // Wipe existing labels (corrupt repair) needs an explicit confirm.
+      if (!delta && tagged > 0) {
+        const ok = await confirmRetagAllSex();
+        if (!ok) {
+          throw new Error('Retag all cancelled');
+        }
+      }
       const payload = {
         scope,
         maxPage: maxPageNumber(),
@@ -7023,20 +7340,27 @@
       };
       st = await startBackgroundIndexJob(payload);
     }
+    const label = sexTaggingLiveLabel({
+      continueOnly: delta,
+      listChanged: delta && listChanged,
+      left: targetIds.length,
+      retagAll: !delta && tagged > 0,
+    });
+    // Sex progress belongs on the Tag sex button — never overwrite Compact /
+    // Show matches with Tagging labels.
+    setLiveStatus(label);
     indexRunning = true;
     indexJobKind = 'sex';
+    indexSexDelta = delta || String(st?.mode || '') === 'sex-delta';
     applyIndexJobProgress(st);
     updateFilterBarLabels();
     startIndexStatusPoll();
-    const finalSt = await waitForIndexJob({
-      scope,
-      progressEl,
-      progressPrefix: delta ? 'Tagging (delta)' : 'Tagging',
-    });
+    const finalSt = await waitForIndexJob({ scope });
     stopIndexPoll();
     indexRunning = false;
     indexProgressLabel = '';
     indexJobKind = '';
+    indexSexDelta = false;
     updateFilterBarLabels();
     if (finalSt?.status === 'error') {
       throw new Error(finalSt.error || 'Tag sex failed');
@@ -7054,18 +7378,38 @@
     return favIndexCache;
   }
 
-  /** Toolbar Tag sex / Retag sex — full wipe-and-retag of the current list index. */
+  /**
+   * Toolbar Tag sex / Retag sex.
+   * Incomplete baseline → sex-delta (continue untagged only; new index ids included,
+   * removed ids ignored). Compares membership fingerprint from last sex pause.
+   * No baseline / corrupt / fully tagged Retag → full wipe-and-retag.
+   */
   async function buildSexGroupsIndex() {
     setError('');
     try {
       await loadFavIndexCache();
-      if (!(favIndexCache?.videos?.length)) {
+      const videos = favIndexCache?.videos || [];
+      if (!videos.length) {
         throw new Error(
           'No list index — click Build index first, then Tag sex.',
         );
       }
       const scope = indexScopeKey();
-      setLiveStatus('Tagging sex…');
+      const tagged = countSexTagged(videos);
+      const untagged = countSexUntagged(videos);
+      const corrupt = sexLabelsLookCorrupt(videos);
+      // Incomplete (some labeled, some not) → continue; only wipe when starting
+      // fresh, repairing corrupt dual-labels, or full Retag of a complete set.
+      const delta = tagged > 0 && untagged > 0 && !corrupt;
+      const listChanged = delta
+        ? sexMembershipChangedSincePause(videos, favIndexCache?.sexMembershipSig)
+        : false;
+      const targetIds = delta
+        ? videos
+            .filter((v) => !videoSexGroupSet(v).size)
+            .map((v) => String(v.videoId || '').trim())
+            .filter(Boolean)
+        : [];
       let st = await send('INDEX_JOB_STATUS');
       if (st?.status === 'running' || st?.status === 'stopping') {
         if (st.scope !== scope) {
@@ -7074,39 +7418,56 @@
           );
         }
       } else {
+        // Complete baseline / corrupt → wipe-and-retag needs an explicit confirm.
+        if (!delta && tagged > 0) {
+          const ok = await confirmRetagAllSex();
+          if (!ok) return;
+        }
         st = await startBackgroundIndexJob({
           scope,
           maxPage: maxPageNumber(),
           libraryTotal: libraryTotalHintForIndex(),
           sexOnly: true,
-          mode: 'sex',
+          mode: delta ? 'sex-delta' : 'sex',
+          targetIds,
           ...playlistIndexJobExtras(),
         });
       }
+      const label = sexTaggingLiveLabel({
+        continueOnly: delta,
+        listChanged: delta && listChanged,
+        left: targetIds.length,
+        retagAll: !delta && tagged > 0,
+      });
+      setLiveStatus(label);
       indexRunning = true;
       indexJobKind = 'sex';
+      indexSexDelta = delta || String(st?.mode || '') === 'sex-delta';
       applyIndexJobProgress(st);
       updateFilterBarLabels();
       startIndexStatusPoll();
-      const finalSt = await waitForIndexJob({
-        scope,
-        progressPrefix: 'Tagging',
-      });
+      const finalSt = await waitForIndexJob({ scope });
       stopIndexPoll();
       if (finalSt?.status === 'error') {
         throw new Error(finalSt.error || 'Tag sex failed');
       }
       if (finalSt?.status === 'stopped') {
-        throw new Error('Tag sex was stopped');
+        await loadFavIndexCache();
+        const leftStop = countSexUntagged(favIndexCache?.videos);
+        throw new Error(
+          leftStop
+            ? `Tag sex was stopped · ${formatFavCount(leftStop)} left — click Retag sex to continue`
+            : 'Tag sex was stopped',
+        );
       }
       await loadFavIndexCache();
-      const tagged = countSexTagged(favIndexCache?.videos);
+      const taggedNow = countSexTagged(favIndexCache?.videos);
       const left = countSexUntagged(favIndexCache?.videos);
       setLiveStatus(
         left
           ? `Sex tags incomplete · ${formatFavCount(left)} left — retry ${sexIdleLabel()}`
-          : tagged
-            ? `Sex tagged · ${formatFavCount(tagged)}`
+          : taggedNow
+            ? `Sex tagged · ${formatFavCount(taggedNow)}`
             : 'Sex tagging finished',
       );
     } catch (err) {
@@ -7115,6 +7476,7 @@
       indexRunning = false;
       indexProgressLabel = '';
       indexJobKind = '';
+      indexSexDelta = false;
       stopIndexPoll();
       updateFilterBarLabels();
       resumeIndexJobUiIfNeeded().catch(() => {});
@@ -7231,6 +7593,7 @@
       indexRunning = false;
       indexProgressLabel = '';
       indexJobKind = '';
+      indexSexDelta = false;
       stopIndexPoll();
       updateFilterBarLabels();
       // If job still running (e.g. navigated away mid-wait), reconnect UI.
@@ -7256,8 +7619,9 @@
   /**
    * Build/refresh the Favorites index via background job (works on playlist pages).
    * Does not replace favIndexCache when the current page is a playlist.
+   * Progress: status + Index button only — never Compact / Show matches.
    */
-  async function buildFavoritesIndexRemote({ progressEl } = {}) {
+  async function buildFavoritesIndexRemote() {
     if (favoritesRemoteIndexRunning) {
       for (let i = 0; i < 600 && favoritesRemoteIndexRunning; i += 1) {
         await new Promise((r) => setTimeout(r, 500));
@@ -7266,11 +7630,8 @@
       return myFavIdSet;
     }
     favoritesRemoteIndexRunning = true;
-    const label = (text) => {
-      if (progressEl) progressEl.textContent = text;
-    };
     try {
-      label('Indexing Favorites 0/…');
+      setLiveStatus('Indexing Favorites…');
       let st = await send('INDEX_JOB_STATUS');
       if (st?.status === 'running' || st?.status === 'stopping') {
         if (st.scope !== 'favorites') {
@@ -7301,15 +7662,12 @@
       }
       if (!isPlaylistDetailPage()) {
         indexRunning = true;
+        indexJobKind = 'crawl';
         applyIndexJobProgress(st);
         updateFilterBarLabels();
         startIndexStatusPoll();
       }
-      const finalSt = await waitForIndexJob({
-        scope: 'favorites',
-        progressEl,
-        progressPrefix: 'Indexing Favorites',
-      });
+      const finalSt = await waitForIndexJob({ scope: 'favorites' });
       if (finalSt?.status === 'error') {
         throw new Error(finalSt.error || 'Favorites index failed');
       }
@@ -7324,6 +7682,7 @@
         indexRunning = false;
         indexProgressLabel = '';
         indexJobKind = '';
+        indexSexDelta = false;
         stopIndexPoll();
         updateFilterBarLabels();
         resumeIndexJobUiIfNeeded().catch(() => {});
@@ -7348,6 +7707,7 @@
       indexRunning = false;
       indexProgressLabel = '';
       indexJobKind = '';
+      indexSexDelta = false;
       lastIndexStats = null;
       stopIndexPoll();
       updateFilterBarLabels();
@@ -7861,7 +8221,16 @@
     };
   }
 
-  function videoMatchesFilters(video, { minSec, maxSec }) {
+  function readTitleQueryFilter() {
+    const bar = qs(document, `.${NS}-controls`) || qs(document, `.${NS}-filterbar`);
+    const titleIn = bar && qs(bar, '[data-role="title-query"]');
+    filterState.titleQuery = titleIn
+      ? String(titleIn.value || '').trim()
+      : String(filterState.titleQuery || '').trim();
+    return filterState.titleQuery;
+  }
+
+  function videoMatchesFilters(video, { minSec, maxSec, titleQuery }) {
     const id = String(video.videoId);
     const onDisk = localIdSet.has(id) || isCardLocal(id);
     if (!diskFilterIsAll()) {
@@ -7895,6 +8264,16 @@
       if (dur == null) return false;
       if (minSec != null && dur < minSec) return false;
       if (maxSec != null && dur > maxSec) return false;
+    }
+    const q = String(titleQuery || '').trim().toLowerCase();
+    if (q) {
+      // Include Favorites seq prefix ("N——…") so Name can match ordinals too.
+      const raw = String(video?.title || '');
+      const bare = bareTitle(raw);
+      const seq = seqOrderKey(video);
+      const display = seq != null ? titledWithOrdinal(seq, bare) : raw;
+      const hay = `${display}\n${raw}\n${bare}`.toLowerCase();
+      if (!hay.includes(q)) return false;
     }
     return true;
   }
@@ -9004,6 +9383,13 @@
       list = favoritesListEl();
     }
     if (!list || !list.parentElement) {
+      // One short retry — boot restore used to fail here and fall through to
+      // Show matches (active match set without Compact DOM).
+      await new Promise((r) => setTimeout(r, 50));
+      layoutTopControls();
+      list = favoritesListEl();
+    }
+    if (!list || !list.parentElement) {
       throw new Error('Could not find the video list container');
     }
     // Lock page size from the native list / title total BEFORE we swap DOM.
@@ -9040,15 +9426,12 @@
     viewMode = 'compact';
     setError('');
     updateFilterBarLabels();
-    const compactBtn =
-      qs(document, `.${NS}-controls [data-act="filter-compact"]`) ||
-      qs(document, `.${NS}-filterbar [data-act="filter-compact"]`);
-    if (compactBtn) compactBtn.textContent = 'Compacting…';
+    // Keep Compact label stable (Compacting… via updateFilterBarLabels). Scan /
+    // index refresh progress goes to status + Index / Tag sex — not this button.
     try {
-      // Default Match (all chips on, no Duration) still lists the full index — like All matches.
+      // Default Match (all chips on, no Duration/Name) still lists the full index — like All matches.
       const { matched, emptyRules } = await collectMatchItems({
         ensureIndex,
-        progressEl: compactBtn,
         allowUnfiltered: true,
       });
       if (emptyRules) {
@@ -9061,15 +9444,20 @@
         updateFilterBarLabels();
         return;
       }
+      // Mount Compact first — only then stamp an active match set. Setting
+      // filterState.active before enterCompactView left Show-matches UI when
+      // mount failed on boot (active + !compactViewActive → uiViewMode matches).
+      await enterCompactView(matched);
       filterState.matchedIds = new Set(matched.map((v) => String(v.videoId)));
       filterState.matchCount = matched.length;
       filterState.active = true;
       stampViewDeps();
-      // Keep Compact even for 0 matches (Match edits must not fall back to Show all).
-      await enterCompactView(matched);
       viewMode = 'compact';
       wireCardClicks();
-      await refreshLookup();
+      // Boot paints before HELPER_SCAN — skip lookup until disk marks exist.
+      if (!(bootInProgress && !scanned)) {
+        await refreshLookup();
+      }
       await restoreSelectionToPage(parseCards());
       applyFilterToCurrentPage();
       updateFilterBarLabels();
@@ -9087,6 +9475,14 @@
         }
       }
     } catch (err) {
+      // Never leave a half-applied Show-matches highlight after a Compact failure.
+      if (!compactViewActive) {
+        filterState.active = false;
+        filterState.matchedIds = null;
+        filterState.matchCount = null;
+        viewDeps = null;
+        viewMode = 'compact';
+      }
       setError(`Compact failed: ${err.message || String(err)}`);
       throw err;
     } finally {
@@ -9098,13 +9494,13 @@
   /** Resolve current Match rules to a video list (does not change View / selection). */
   async function collectMatchItems({
     ensureIndex = true,
-    progressEl = null,
-    /** When true, both dual-toggles on + no Duration still selects the full list index. */
+    /** When true, both dual-toggles on + no Duration/Name still selects the full list index. */
     allowUnfiltered = false,
   } = {}) {
     // Lazy freshness: only refresh disk/index when this Match needs them and they are missing/dirty/drifted.
-    if (progressEl && !diskFilterIsAll() && (!scanned || !localIdSet.size || diskIndexDirty)) {
-      progressEl.textContent = 'Scanning…';
+    // Never rewrite Compact / Show matches for scan/refresh — status + Index/Scan own that.
+    if (!diskFilterIsAll() && (!scanned || !localIdSet.size || diskIndexDirty)) {
+      setLiveStatus('Scanning…');
     }
     await ensureFreshDiskForMatch();
 
@@ -9112,7 +9508,7 @@
     if (!collectionFilterIsAll()) {
       if (isPlaylistDetailPage()) {
         try {
-          await ensureFreshFavoritesIndexForMatch({ progressEl });
+          await ensureFreshFavoritesIndexForMatch();
         } catch (err) {
           throw new Error(
             'Favorited/Unfavorited needs a Favorites index — ' +
@@ -9125,14 +9521,26 @@
           );
         }
       } else {
-        await ensurePlaylistMembershipSet({ force: true });
+        await ensurePlaylistMembershipSet({ force: !bootInProgress });
         let playlists = [];
         try {
-          const listed = await send('SITE_PLAYLIST_LIST');
-          playlists = (listed?.playlists || []).filter((p) => {
-            const id = String(p?.id || '').trim();
-            return /^[1-9]\d*$/.test(id);
-          });
+          // Prefer the already-warming Libraries prefetch on boot.
+          if (bootInProgress && libraryCountPrefetchP) {
+            const cached = await libraryCountPrefetchP.catch(() => null);
+            if (Array.isArray(cached)) playlists = cached;
+          }
+          if (!playlists.length) {
+            const listed = await send('SITE_PLAYLIST_LIST');
+            playlists = (listed?.playlists || []).filter((p) => {
+              const id = String(p?.id || '').trim();
+              return /^[1-9]\d*$/.test(id);
+            });
+          } else {
+            playlists = playlists.filter((p) => {
+              const id = String(p?.id || '').trim();
+              return /^[1-9]\d*$/.test(id);
+            });
+          }
         } catch (err) {
           throw new Error(
             'In playlist / Not in playlist needs your playlist list — ' +
@@ -9140,71 +9548,84 @@
           );
         }
         if (!playlists.length) {
-          throw new Error(
-            'In playlist / Not in playlist: no site playlists found. Open /my/playlists/ and retry.',
-          );
+          if (bootInProgress) {
+            // Soft: paint Compact without membership gate; user can re-click Match later.
+            playlists = [];
+          } else {
+            throw new Error(
+              'In playlist / Not in playlist: no site playlists found. Open /my/playlists/ and retry.',
+            );
+          }
         }
-        const have = new Set(playlistMembershipScopes || []);
-        const missing = playlists.filter((p) => !have.has(`playlist:${String(p.id)}`));
-        if (missing.length) {
-          const labels = missing.map((p) => {
-            try {
-              return formatPlaylistOptionLabel(p);
-            } catch (_) {
-              return 'Playlist';
-            }
-          });
-          const shown = labels.slice(0, 8).join('; ');
-          const more = labels.length > 8 ? ` (+${labels.length - 8} more)` : '';
-          throw new Error(
-            `In playlist / Not in playlist needs every playlist indexed (${have.size}/${playlists.length}). ` +
-              `Still missing: ${shown}${more}. Open each and Build index.`,
-          );
-        }
-        // Content may be dirty after Edit when a patch could not run — refuse rather than silent stale.
-        if (playlistIndexesDirty) {
-          throw new Error(
-            'Playlist indexes changed and need Rebuild. Open each edited playlist and Rebuild index, then retry.',
-          );
+        if (playlists.length) {
+          const have = new Set(playlistMembershipScopes || []);
+          const missing = playlists.filter((p) => !have.has(`playlist:${String(p.id)}`));
+          if (missing.length && !bootInProgress) {
+            const labels = missing.map((p) => {
+              try {
+                return formatPlaylistOptionLabel(p);
+              } catch (_) {
+                return 'Playlist';
+              }
+            });
+            const shown = labels.slice(0, 8).join('; ');
+            const more = labels.length > 8 ? ` (+${labels.length - 8} more)` : '';
+            throw new Error(
+              `In playlist / Not in playlist needs every playlist indexed (${have.size}/${playlists.length}). ` +
+                `Still missing: ${shown}${more}. Open each and Build index.`,
+            );
+          }
+          // Content may be dirty after Edit when a patch could not run — refuse rather than silent stale.
+          if (playlistIndexesDirty && !bootInProgress) {
+            throw new Error(
+              'Playlist indexes changed and need Rebuild. Open each edited playlist and Rebuild index, then retry.',
+            );
+          }
         }
       }
     }
     const needsDur = readDurationFilterInputs();
+    const titleQuery = readTitleQueryFilter();
     const wantsDur = needsDur.minSec != null || needsDur.maxSec != null;
+    const wantsTitle = !!titleQuery;
     const wantsDisk = !diskFilterIsAll();
     const wantsColl = !collectionFilterIsAll();
     const wantsSex = !sexFilterIsAll();
-    if (!wantsDur && !wantsDisk && !wantsColl && !wantsSex && !allowUnfiltered) {
+    if (!wantsDur && !wantsTitle && !wantsDisk && !wantsColl && !wantsSex && !allowUnfiltered) {
       return { matched: [], emptyRules: true };
     }
     if (ensureIndex) {
-      if (progressEl && (listIndexDirty || !(favIndexCache?.videos?.length))) {
-        progressEl.textContent = listIndexDirty ? 'Refreshing index…' : 'Indexing…';
-      } else if (progressEl) {
-        const liveTotal = liveLibraryTotalForDrift();
-        const indexed = favIndexCache?.videos?.length || 0;
-        if (indexCountDrifted(liveTotal, indexed)) progressEl.textContent = 'Refreshing index…';
+      const liveTotal = liveLibraryTotalForDrift();
+      const indexed = favIndexCache?.videos?.length || 0;
+      if (!bootInProgress) {
+        if (listIndexDirty || !indexed) {
+          setLiveStatus(listIndexDirty ? 'Refreshing index…' : 'Indexing…');
+        } else if (indexCountDrifted(liveTotal, indexed)) {
+          setLiveStatus('Refreshing index…');
+        }
       }
       await ensureFreshListIndexForMatch();
     }
     // Futa/Straight-only Match needs sexGroup. Full Tag when no baseline;
     // sex-delta when some rows are still untagged after auto sync.
-    if (wantsSex) {
+    // Boot must not wait on Tag sex — paint with whatever labels exist; incomplete
+    // rows simply fail Futa/Straight until a later Retag / Match click.
+    if (wantsSex && !bootInProgress) {
       const tagged = countSexTagged(favIndexCache?.videos);
       const untagged = countSexUntagged(favIndexCache?.videos);
       const corrupt = sexLabelsLookCorrupt(favIndexCache?.videos);
       if (tagged === 0 || untagged > 0 || corrupt) {
-        await ensureSexGroupsInListIndex({ progressEl });
+        await ensureSexGroupsInListIndex();
       }
     }
-    const videos = favIndexCache?.videos || [];
+    let videos = favIndexCache?.videos || [];
     if (!videos.length) {
       throw new Error(
         'No list index — click Build index first. ' +
           'Scan marks Local vs Not local; Index lists every video so filters can select across pages.',
       );
     }
-    if (wantsSex) {
+    if (wantsSex && !bootInProgress) {
       const tagged = countSexTagged(videos);
       const untagged = countSexUntagged(videos);
       if (!tagged) {
@@ -9220,7 +9641,11 @@
         );
       }
     }
-    const bounds = readDurationFilterInputs();
+    // Name may match seq prefixes — attach Helper/title ordinals before filtering.
+    if (wantsTitle) {
+      videos = await ensureCompactItemOrdinals(videos);
+    }
+    const bounds = { ...readDurationFilterInputs(), titleQuery: readTitleQueryFilter() };
     const matched = [];
     videos.forEach((v) => {
       if (videoMatchesFilters(v, bounds)) matched.push(v);
@@ -9259,14 +9684,11 @@
     } catch (_) {
       /* ignore */
     }
-    const applyBtn =
-      qs(document, `.${NS}-controls [data-act="filter-apply"]`) ||
-      qs(document, `.${NS}-filterbar [data-act="filter-apply"]`);
-    if (applyBtn) applyBtn.textContent = 'Showing…';
+    // Showing… comes from updateFilterBarLabels while filterRunning — do not
+    // overwrite with Scanning / Refreshing index on Compact / Show matches.
     try {
       const { matched, emptyRules } = await collectMatchItems({
         ensureIndex,
-        progressEl: applyBtn,
       });
       if (emptyRules) {
         filterState.active = false;
@@ -9321,7 +9743,7 @@
           };
         });
       } else {
-        // Default Match (both dual-toggles on, no Duration) = entire list index.
+        // Default Match (both dual-toggles on, no Duration/Name) = entire list index.
         const result = await collectMatchItems({
           ensureIndex: true,
           allowUnfiltered: true,
@@ -9402,7 +9824,7 @@
     setError('');
   }
 
-  /** Reset Match chips/duration only; keep current View and refresh it. */
+  /** Reset Match chips/duration/name only; keep current View and refresh it. */
   async function resetMatchRules({ persist = true, reapplyView = true } = {}) {
     // Capture live View before touching rules (do not force Show all).
     const keepMode = uiViewMode();
@@ -9414,11 +9836,14 @@
     filterState.straightOn = true;
     filterState.durMinMin = '';
     filterState.durMaxMin = '';
+    filterState.titleQuery = '';
     const bar = qs(document, `.${NS}-controls`) || qs(document, `.${NS}-filterbar`);
     const minIn = bar && qs(bar, '[data-role="dur-min"]');
     const maxIn = bar && qs(bar, '[data-role="dur-max"]');
+    const titleIn = bar && qs(bar, '[data-role="title-query"]');
     if (minIn) minIn.value = '';
     if (maxIn) maxIn.value = '';
+    if (titleIn) titleIn.value = '';
     setError('');
     if (matchViewReapplyTimer) {
       clearTimeout(matchViewReapplyTimer);
@@ -9593,6 +10018,19 @@
     maxIn.addEventListener('change', onEdit);
   }
 
+  function wireTitleQueryFilterInput(bar) {
+    const titleIn = qs(bar, '[data-role="title-query"]');
+    if (!titleIn || titleIn.dataset.titleQueryWired === '1') return;
+    titleIn.dataset.titleQueryWired = '1';
+    const onEdit = () => {
+      filterState.titleQuery = String(titleIn.value || '').trim();
+      onMatchRuleEdited();
+    };
+    titleIn.addEventListener('input', onEdit);
+    titleIn.addEventListener('change', onEdit);
+    titleIn.addEventListener('search', onEdit);
+  }
+
   /** KVS treats playlist_id 0 as "create new"; never a real target. */
   function isValidPlaylistId(id) {
     return /^[1-9]\d*$/.test(String(id || '').trim());
@@ -9667,17 +10105,10 @@
   /** In-flight / resolved promise for early Libraries-source count prefetch. */
   let libraryCountPrefetchP = null;
 
-  function isSiteMyFavoritesNavLink(el) {
-    const a = el?.closest?.('a.button_fav');
-    if (!a || !(a instanceof Element)) return false;
-    if (a.classList.contains(`${NS}-playlist-lib-btn`) || a.dataset?.hxyruleLibBtn === '1') {
-      return false;
-    }
-    if (a.closest?.(`[data-hxyrule], .${NS}-toolbar, .${NS}-modal-backdrop, .${NS}-topstack`)) {
-      return false;
-    }
-    const href = a.getAttribute('href') || '';
-    return /\/my\/favourites\/videos\/?/i.test(href);
+  function isSiteMyFavoritesNavLink(_el) {
+    // Libraries owns the switcher. Native `a.button_fav.fav` next to Tags must
+    // keep site navigation to /my/favourites/videos/ — never hijack it.
+    return false;
   }
 
   function libraryNavLabel(p) {
@@ -11095,14 +11526,14 @@
       await applyOrdinalsToCards(cards);
       await evaluateVisibleLocalPages(localIdSet);
       // Match chips only edit rules. Re-apply after scan only when View already
-      // has an active filtered result, never just because chips changed.
-      // Skip while a View apply is already running (collectMatchItems may scan).
-      // Keep Compact if that is the active View — do not bounce to Show matches.
-      if (filterState.active && !filterRunning) {
-        if (compactViewActive) {
-          await applyCompactMatchesView({ ensureIndex: false });
+      // has an active filtered result AND Local/Not local depends on disk.
+      // Prefer persisted viewMode so a failed Compact mount cannot fall through
+      // to Show matches (active + !compactViewActive used to do that).
+      if (filterState.active && !filterRunning && !diskFilterIsAll()) {
+        if (normalizeViewMode(viewMode) === 'compact' || compactViewActive) {
+          await applyCompactMatchesView({ ensureIndex: false, quiet: true });
         } else {
-          await applyLibraryFilter({ ensureIndex: false });
+          await applyLibraryFilter({ ensureIndex: false, quiet: true });
         }
       }
       refreshScanLabelCounts();
@@ -14712,59 +15143,88 @@
 
 
   async function bootFavorites() {
-    // Establish the complete visible geometry before the first await. Without
-    // this, GET_CONFIG/Helper latency exposes the site's original layout for
-    // one frame and then visibly jumps to the fixed toolbar layout.
-    ensureJumpBar();
-    ensureFilterBar();
-    layoutTopControls();
-    revealFirstLayout();
+    bootInProgress = true;
     try {
-      config = await send('GET_CONFIG');
-    } catch (_) {
-      config = { localPreferPlayback: true };
-    }
-    await recoverFailedQueueOnPageLoad();
-    // Page refresh keeps the bag when it belongs to this list; switching lists clears.
-    await adoptSelectionForCurrentLibrary();
-    await loadFavIndexCache();
-    wireToolbar();
-    wireFilterBar();
-    bindListObserver();
-    bindPaginationClicks();
-    ensureJumpBar();
-    ensureFilterBar();
-    layoutTopControls();
-    startPageWatch();
-    ignoreMutationsUntil = Date.now() + 500;
-    parseCards().forEach((card) => renderStatus(card, null, false));
-    wireCardClicks();
-    // Reattach Index/Renumber progress before Scan so refresh keeps grey+(a/b).
-    await resumeBackgroundJobsUi();
-    // Refresh the disk index once on every full page load. Pagination/AJAX
-    // changes continue to use refreshLookup() so they do not rescan the root.
-    await doScan();
-    await restoreSelectionToPage(parseCards());
-    applyFilterToCurrentPage();
-    await refreshQueue();
-    await refreshSelectionCount();
-    await resumeBackgroundJobsUi();
-    ensureJumpBar();
-    layoutTopControls();
-    pageFinger = pageFingerprint();
-    // Show-all: site may replace the native list after scan; re-paint seq titles.
-    if (!compactViewActive) {
-      scheduleOrdinalRepaint([0, 500, 1500]);
-    }
+      // Establish the complete visible geometry before the first await. Without
+      // this, GET_CONFIG/Helper latency exposes the site's original layout for
+      // one frame and then visibly jumps to the fixed toolbar layout.
+      ensureJumpBar();
+      ensureFilterBar();
+      layoutTopControls();
+      revealFirstLayout();
+      try {
+        config = await send('GET_CONFIG');
+      } catch (_) {
+        config = { localPreferPlayback: true };
+      }
+      await recoverFailedQueueOnPageLoad();
+      // Page refresh keeps the bag when it belongs to this list; switching lists clears.
+      await adoptSelectionForCurrentLibrary();
+      await loadFavIndexCache();
+      // Full reload must restore Match chips + Compact/Show matches (library
+      // switch already does this in clearSelectionIfLibraryChanged).
+      await loadToolbarFilters();
+      // Do not pre-hide the native list here — that left a blank page for the
+      // whole Scan when restore was slow. restoreToolbarView hides only while
+      // Compact DOM is actually building (now a cached-index paint).
+      if (normalizeViewMode(viewMode) === 'compact' || normalizeViewMode(viewMode) === 'matches') {
+        viewRestorePending = true;
+      }
+      wireToolbar();
+      wireFilterBar();
+      bindListObserver();
+      bindPaginationClicks();
+      ensureJumpBar();
+      ensureFilterBar();
+      layoutTopControls();
+      startPageWatch();
+      ignoreMutationsUntil = Date.now() + 500;
+      parseCards().forEach((card) => renderStatus(card, null, false));
+      wireCardClicks();
+      // Reattach Index/Renumber progress before Compact restore / Scan.
+      await resumeBackgroundJobsUi();
+      // Instant Compact from stored index — same cost as clicking Compact after
+      // Show all (no nested Scan / index crawl / Tag sex on the boot path).
+      await restoreToolbarView({ ensureIndex: false });
+      await restoreSelectionToPage(parseCards());
+      // Disk scan can be slow on large roots; Compact is already on screen.
+      // Local/Not-local Views re-apply inside doScan after marks land.
+      await doScan();
+      if (compactViewActive && diskFilterIsAll()) {
+        await refreshLookup().catch(() => {});
+      }
+      await refreshQueue();
+      await refreshSelectionCount();
+      await resumeBackgroundJobsUi();
+      // Fallback if early restore failed (empty index) — still skip crawl.
+      {
+        const mode = normalizeViewMode(viewMode);
+        if (
+          (mode === 'compact' && !compactViewActive) ||
+          (mode === 'matches' && !filterState.active)
+        ) {
+          await restoreToolbarView({ ensureIndex: false });
+        }
+      }
+      ensureJumpBar();
+      layoutTopControls();
+      pageFinger = pageFingerprint();
+      // Show-all: site may replace the native list after scan; re-paint seq titles.
+      if (!compactViewActive) {
+        scheduleOrdinalRepaint([0, 500, 1500]);
+      }
 
-    setInterval(() => {
-      refreshQueue().catch(() => {});
-      refreshSelectionCount().catch(() => {});
-      refreshIndexJobUi().catch(() => {});
-      refreshRenumberJobUi().catch(() => {});
-      refreshPlaylistAddJobUi().catch(() => {});
-      refreshFavAddJobUi().catch(() => {});
-    }, 4000);
+      setInterval(() => {
+        refreshQueue().catch(() => {});
+        refreshSelectionCount().catch(() => {});
+        refreshIndexJobUi().catch(() => {});
+        refreshRenumberJobUi().catch(() => {});
+        refreshPlaylistAddJobUi().catch(() => {});
+        refreshFavAddJobUi().catch(() => {});
+      }, 4000);
+    } finally {
+      bootInProgress = false;
+    }
   }
 
   function playlistListRoot() {
@@ -14772,60 +15232,82 @@
   }
 
   async function bootPlaylistPage() {
-    // Same control surface as favorites; Delete removes from this playlist.
-    ensureJumpBar();
-    ensureControls();
-    ensureFilterBar();
-    layoutTopControls();
-    forcePlaylistHeaderToBottom();
-    revealFirstLayout();
+    bootInProgress = true;
     try {
-      config = await send('GET_CONFIG');
-    } catch (_) {
-      config = { localPreferPlayback: true };
-    }
-    await recoverFailedQueueOnPageLoad();
-    // Page refresh keeps the bag when it belongs to this list; switching lists clears.
-    await adoptSelectionForCurrentLibrary();
-    await loadFavIndexCache();
-    wireToolbar();
-    wireFilterBar();
-    bindListObserver();
-    bindPaginationClicks();
-    ensureJumpBar();
-    ensureControls();
-    layoutTopControls();
-    startPageWatch();
-    ignoreMutationsUntil = Date.now() + 500;
-    parseCards().forEach((card) => {
-      ensurePickRail(card);
-      renderStatus(card, null, false);
-    });
-    wireCardClicks();
-    // Reattach Index/Renumber progress before Scan so refresh keeps grey+(a/b).
-    await resumeBackgroundJobsUi();
-    // Refresh the disk index once on every full page load. Pagination/AJAX
-    // changes continue to use refreshLookup() so they do not rescan the root.
-    await doScan();
-    await restoreSelectionToPage(parseCards());
-    applyFilterToCurrentPage();
-    await refreshQueue().catch(() => {});
-    await refreshSelectionCount();
-    await resumeBackgroundJobsUi();
-    layoutTopControls();
-    pageFinger = pageFingerprint();
-    if (!compactViewActive) {
-      scheduleOrdinalRepaint([0, 500, 1500]);
-    }
+      // Same control surface as favorites; Delete removes from this playlist.
+      ensureJumpBar();
+      ensureControls();
+      ensureFilterBar();
+      layoutTopControls();
+      forcePlaylistHeaderToBottom();
+      revealFirstLayout();
+      try {
+        config = await send('GET_CONFIG');
+      } catch (_) {
+        config = { localPreferPlayback: true };
+      }
+      await recoverFailedQueueOnPageLoad();
+      // Page refresh keeps the bag when it belongs to this list; switching lists clears.
+      await adoptSelectionForCurrentLibrary();
+      await loadFavIndexCache();
+      // Full reload must restore Match chips + Compact/Show matches (library
+      // switch already does this in clearSelectionIfLibraryChanged).
+      await loadToolbarFilters();
+      // Do not pre-hide the native list for the whole Scan (see bootFavorites).
+      if (normalizeViewMode(viewMode) === 'compact' || normalizeViewMode(viewMode) === 'matches') {
+        viewRestorePending = true;
+      }
+      wireToolbar();
+      wireFilterBar();
+      bindListObserver();
+      bindPaginationClicks();
+      ensureJumpBar();
+      ensureControls();
+      layoutTopControls();
+      startPageWatch();
+      ignoreMutationsUntil = Date.now() + 500;
+      parseCards().forEach((card) => {
+        ensurePickRail(card);
+        renderStatus(card, null, false);
+      });
+      wireCardClicks();
+      await resumeBackgroundJobsUi();
+      // Instant Compact from stored index — no nested Scan / index crawl / Tag sex.
+      await restoreToolbarView({ ensureIndex: false });
+      await restoreSelectionToPage(parseCards());
+      await doScan();
+      if (compactViewActive && diskFilterIsAll()) {
+        await refreshLookup().catch(() => {});
+      }
+      await refreshQueue().catch(() => {});
+      await refreshSelectionCount();
+      await resumeBackgroundJobsUi();
+      {
+        const mode = normalizeViewMode(viewMode);
+        if (
+          (mode === 'compact' && !compactViewActive) ||
+          (mode === 'matches' && !filterState.active)
+        ) {
+          await restoreToolbarView({ ensureIndex: false });
+        }
+      }
+      layoutTopControls();
+      pageFinger = pageFingerprint();
+      if (!compactViewActive) {
+        scheduleOrdinalRepaint([0, 500, 1500]);
+      }
 
-    setInterval(() => {
-      refreshQueue().catch(() => {});
-      refreshSelectionCount().catch(() => {});
-      refreshIndexJobUi().catch(() => {});
-      refreshRenumberJobUi().catch(() => {});
-      refreshPlaylistAddJobUi().catch(() => {});
-      refreshFavAddJobUi().catch(() => {});
-    }, 4000);
+      setInterval(() => {
+        refreshQueue().catch(() => {});
+        refreshSelectionCount().catch(() => {});
+        refreshIndexJobUi().catch(() => {});
+        refreshRenumberJobUi().catch(() => {});
+        refreshPlaylistAddJobUi().catch(() => {});
+        refreshFavAddJobUi().catch(() => {});
+      }, 4000);
+    } finally {
+      bootInProgress = false;
+    }
   }
 
   async function boot() {

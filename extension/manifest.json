@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "HXYRULE",
-  "version": "0.1.75",
+  "version": "0.1.80",
   "description": "Personal local video status, playback, and queued downloads for Rule34Video favorites.",
   "action": {
     "default_title": "HXYRULE",

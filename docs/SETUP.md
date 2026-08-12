@@ -8,7 +8,7 @@ This document is enough to deploy without prior chat history. Read `README.md` f
 
 ## What this is
 
-- Chrome MV3 unpacked extension (`extension/`, version **0.1.75**)
+- Chrome MV3 unpacked extension (`extension/`, version **0.1.80**)
 - macOS LaunchAgent Helper (`mac-helper/`, `127.0.0.1:17934`)
 - Optional: `source-han-force/` (Source Han Serif on all pages; not required — see its README)
 - Personal enhancer only — does **not** change Rule34Video servers
@@ -73,7 +73,7 @@ Expect all unit tests OK (currently 39).
 ### Smoke checklist
 
 1. **Select pages** across a page range; selection survives pagination and page refresh in that list, and clears when switching Favorites ↔ playlist or playlist ↔ playlist.
-2. **Scan local** (or Show matches with Local — auto-scans if needed) → **Local / Not local** filter works. After **Build index** and one **Tag sex**, Match chips **Futa / Straight** align with the site top sex filter; later hearts / Edit adds auto-tag sex when a baseline exists.
+2. **Scan local** (or Show matches with Local — auto-scans if needed) → **Local / Not local** filter works. After **Build index** and one **Tag sex** (detail-page `futanari` tag → Futa, else Straight), Match chips **Futa / Straight** work; later hearts / Edit adds auto-tag sex when a baseline exists.
 3. Collection filters: playlist page **Unfavorited** only; favorites page **Not in playlist** only (Build indexes first; Show matches merges dirty/drifted list indexes).
 4. **Download** several videos (concurrency up to 6); **Stop** mid-queue.
 5. Local thumb → IINA; ⌘-click → web; path → Finder.

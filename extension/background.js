@@ -1003,14 +1003,40 @@ async function getFavIndex(scope = 'favorites') {
 
 async function setFavIndex(index, scope = 'favorites') {
   const key = scope && scope !== 'favorites' ? `hxyruleIndex:${scope}` : 'hxyruleFavIndex';
+  const prev = (await chrome.storage.local.get([key]))[key] || {};
   const next = {
     builtAt: Number(index?.builtAt) || Date.now(),
     favTotal: Number(index?.favTotal) || (index?.videos || []).length,
     videos: Array.isArray(index?.videos) ? index.videos : [],
     scope: scope || 'favorites',
   };
+  // Sex pause membership fingerprint: caller may set/clear; otherwise keep.
+  if (index && Object.prototype.hasOwnProperty.call(index, 'sexMembershipSig')) {
+    const sig = String(index.sexMembershipSig || '').trim();
+    if (sig) next.sexMembershipSig = sig;
+  } else if (String(prev?.sexMembershipSig || '').trim()) {
+    next.sexMembershipSig = String(prev.sexMembershipSig).trim();
+  }
   await chrome.storage.local.set({ [key]: next });
   return next;
+}
+
+/** Stable fingerprint of list membership (videoIds), not titles or totals alone. */
+function sexMembershipSigFromVideos(videos) {
+  const ids = (Array.isArray(videos) ? videos : [])
+    .map((v) => String(v?.videoId || '').trim())
+    .filter((id) => /^[1-9]\d*$/.test(id));
+  ids.sort();
+  let h = 2166136261;
+  for (const id of ids) {
+    for (let i = 0; i < id.length; i += 1) {
+      h ^= id.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    h ^= 124;
+    h = Math.imul(h, 16777619);
+  }
+  return `${ids.length}:${(h >>> 0).toString(16)}`;
 }
 
 /** Union of videoIds across all stored playlist indexes (hxyruleIndex:playlist:*). */
@@ -2309,7 +2335,7 @@ async function fetchSiteText(url, { retries = 6, preferSameOrigin = false } = {}
     if (isRateLimitedResponse(status, text)) {
       if (attempt >= maxRetries) {
         const err = new Error(
-          `rate limited by site (HTTP ${status || 429}, ${lastLen} bytes) — wait ~30s and Rebuild index again`,
+          `rate limited by site (HTTP ${status || 429}, ${lastLen} bytes) — wait ~30s and retry`,
         );
         err.code = 'RATE_LIMITED';
         throw err;
@@ -2524,9 +2550,11 @@ async function fetchFavoritesPage(
       throw new Error('captcha or bot check encountered');
     }
     if (isRateLimitedResponse(res.status, text)) {
-      throw new Error(
-        `rate limited by site (${lastLen} bytes) — wait ~30s and Rebuild index again`,
+      const err = new Error(
+        `rate limited by site (${lastLen} bytes) — wait ~30s and retry`,
       );
+      err.code = 'RATE_LIMITED';
+      throw err;
     }
     const parsed = parseFavoriteCards(text, pageNum);
     if (parsed.length) {
@@ -2647,8 +2675,9 @@ function extractCardMetaFromChunk(chunk) {
 }
 
 /**
- * Sex label from a list card badge. Favorites/playlists ignore the top
- * category_group_id / flag1 filter, so Tag sex uses these overlays instead:
+ * Sex label from a list card badge (homepage/public lists only).
+ * Favorites/playlist cards omit these overlays — Tag sex uses detail-page
+ * futanari tags instead (see enrichVideosWithSexGroups).
  *   <div class="futa">Futa</div> | Gay | (none → straight).
  */
 function parseSexGroupFromCardChunk(chunk) {
@@ -2966,13 +2995,13 @@ function idleIndexJob() {
     probedPastEnd: false,
     videos: [],
     error: '',
-    phase: '', // '' | 'sex' (align Futa/Straight with site category_group_id)
+    phase: '', // '' | 'sex' (align Futa/Straight from detail futanari tags)
     /** List crawl page count; kept while phase=sex overwrites page/maxPage for UI. */
     listMaxPage: 0,
-    /** Within sex step: list page while reading card badges. */
+    /** Within sex step: detail-tag progress (done / total videos). */
     sexFilterPage: 0,
     sexFilterMaxPage: 0,
-    /** 'cards' while reading badges; legacy 'futa' | 'straight' */
+    /** 'detail' (or legacy filter labels) while phase=sex */
     sexFilterLabel: '',
     /** When true, skip list crawl and only run sex enrich on job.videos. */
     sexOnly: false,
@@ -3215,7 +3244,7 @@ async function writeCategoryGroupIdCookie(value) {
       path: '/',
       expirationDate: Math.floor(Date.now() / 1000) + 31536000,
     };
-    // Prefer SameSite=None so SW fetches can still send it when needed.
+    // Site writes Lax via document.cookie; native chip click owns the live filter.
     let saved = await chrome.cookies.set({
       ...base,
       secure: true,
@@ -3239,7 +3268,8 @@ async function assertIndexJobNotCancelled() {
     throw err;
   }
   const job = await readIndexJob();
-  if (job.cancelRequested || job.status === 'stopping') {
+  // 'stopped' too: a finished Stop must abort in-flight Tag sex workers.
+  if (job.cancelRequested || job.status === 'stopping' || job.status === 'stopped') {
     indexJobCancelFlag = true;
     const err = new Error('index cancelled');
     err.code = 'INDEX_CANCELLED';
@@ -3270,6 +3300,30 @@ function countSexGroupTagged(videos) {
   );
 }
 
+/** Save in-progress Tag sex labels into the list index (Stop / partial / resume). */
+async function commitPartialSexVideos(scope, videos) {
+  const scopeKey = String(scope || '').trim();
+  const rows = Array.isArray(videos) ? videos : [];
+  if (!scopeKey || !rows.length || !countSexGroupTagged(rows)) return false;
+  const existing = await getFavIndex(scopeKey);
+  const untagged = rows.reduce(
+    (n, v) => n + (String(v?.sexGroup || '').trim() ? 0 : 1),
+    0,
+  );
+  await setFavIndex(
+    {
+      builtAt: Number(existing?.builtAt) || Date.now(),
+      favTotal: rows.length,
+      videos: rows,
+      scope: scopeKey,
+      // Fingerprint at pause: next Tag sex compares current index ids to this.
+      sexMembershipSig: untagged > 0 ? sexMembershipSigFromVideos(rows) : '',
+    },
+    scopeKey,
+  );
+  return true;
+}
+
 function sexWantIdsForEnrich(rows, { delta = false, targetIds = [] } = {}) {
   const targetSet = new Set(
     (Array.isArray(targetIds) ? targetIds : [])
@@ -3293,106 +3347,313 @@ function sexWantIdsForEnrich(rows, { delta = false, targetIds = [] } = {}) {
   return want;
 }
 
+
 /**
- * Align index sexGroup with list-card badges (Futa / Gay / unlabeled→straight).
- * Favorites & playlists ignore the site top category_group_id / flag1 filter, so
- * native chip clicks cannot produce distinct sets — badge crawl is the source of truth.
+ * True when video detail/popup HTML includes the futanari tag
+ * (exact slug /tags/futanari/ or tag-link label "futanari").
+ */
+function htmlHasFutanariTag(html) {
+  if (!html) return false;
+  if (/\/tags\/futanari(?:\/|(?=["'#?\s>]|$))/i.test(html)) return true;
+  const re =
+    /<a\b[^>]*\bhref=["'][^"']*\/tags\/[^"']*["'][^>]*>\s*([^<]*?)\s*<\/a>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const t = stripHtmlText(m[1])
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (t === 'futanari') return true;
+  }
+  return false;
+}
+
+/** True when HTML has a real tags block (popup sometimes omits it). */
+function htmlLooksLikeHasTagSection(html) {
+  if (!html) return false;
+  return /\/tags\/[a-z0-9_-]+/i.test(html) || /class=["'][^"']*\btags?\b/i.test(html);
+}
+
+/**
+ * One-shot site HTML fetch for Tag sex (no inner retry/backoff — outer loop cools).
+ */
+async function fetchSexDetailText(url) {
+  const res = await fetch(url, {
+    credentials: 'include',
+    redirect: 'follow',
+    headers: {
+      'X-Requested-With': 'XMLHttpRequest',
+      Accept: 'text/html, */*;q=0.1',
+    },
+  });
+  const text = await res.text();
+  if (isRateLimitedResponse(res.status, text)) {
+    const err = new Error(
+      `rate limited by site (HTTP ${res.status || 429}, ${text.length} bytes) — wait ~30s and retry`,
+    );
+    err.code = 'RATE_LIMITED';
+    throw err;
+  }
+  return { res, text };
+}
+
+/**
+ * Fetch video detail (or popup fallback) and return 'futa' | 'straight'.
+ * Throws on rate-limit / total fetch failure (caller may leave row untagged).
+ * Prefer popup HTML first (smaller); full video page only if popup lacks tags.
+ */
+async function classifySexFromVideoDetail(videoId, detailUrl = '') {
+  const id = String(videoId || '').trim();
+  const urls = [];
+  if (/^[1-9]\d*$/.test(id)) {
+    urls.push(`https://rule34video.com/popup-video/${id}/`);
+    urls.push(`https://rule34video.com/video/${id}/`);
+  }
+  const detail = String(detailUrl || '').trim();
+  if (detail && /rule34video\.com\/videos?\//i.test(detail)) urls.push(detail);
+  const unique = [...new Set(urls.filter(Boolean))];
+  let lastErr = null;
+  for (let i = 0; i < unique.length; i += 1) {
+    const url = unique[i];
+    const isPopup = /\/popup-video\//i.test(url);
+    try {
+      const { res, text } = await fetchSexDetailText(url);
+      if (!res.ok) {
+        lastErr = new Error(`HTTP ${res.status}`);
+        continue;
+      }
+      if (!text || text.length < 400) {
+        lastErr = new Error('empty detail page');
+        continue;
+      }
+      // Popup without a tags block → try full video page before labeling straight.
+      if (isPopup && !htmlLooksLikeHasTagSection(text)) {
+        lastErr = new Error('popup missing tags');
+        continue;
+      }
+      return htmlHasFutanariTag(text) ? 'futa' : 'straight';
+    } catch (err) {
+      lastErr = err;
+      if (err?.code === 'RATE_LIMITED' || /rate limited/i.test(String(err?.message || err))) {
+        throw err;
+      }
+    }
+  }
+  throw lastErr || new Error('video detail fetch failed');
+}
+
+/**
+ * Tag sex from video detail tags (not list badges / homepage category chips):
+ * each video page with a futanari tag → futa; otherwise → straight.
  *
  * delta=false: wipe and retag every row (full Tag sex / Retag sex).
  * delta=true: keep existing labels; only fill want-ids (targetIds or untagged).
+ *
+ * Detail fetches run a few at a time (popup-first). On rate-limit we cool
+ * down (shared pause; same wave counts once) and keep going — never abandon
+ * the remainder so Stop / next-day resume is the only manual path.
  */
 async function enrichVideosWithSexGroups(job, videos, { delta = false } = {}) {
+  // Resume mid sex-enrich (SW restart / prior progress): keep labels already set.
+  const resuming =
+    !delta &&
+    (Number(job?.sexFilterPage) > 0 || String(job?.sexFilterLabel || '') === 'detail');
+  const fillOnly = delta || resuming;
   const rows = (Array.isArray(videos) ? videos : []).map((v) => ({
     ...v,
-    sexGroup: delta ? String(v?.sexGroup || '').trim() : '',
+    sexGroup: fillOnly ? String(v?.sexGroup || '').trim() : '',
   }));
   if (!rows.length) return rows;
   const byId = new Map(rows.map((v) => [String(v.videoId || ''), v]));
   const wantIds = sexWantIdsForEnrich(rows, {
-    delta,
+    delta: fillOnly,
     targetIds: job?.targetIds,
   });
-  if (delta && !wantIds.size) return rows;
+  if (fillOnly && !wantIds.size) return rows;
 
-  const listMaxPage = Math.max(
-    Number(job.listMaxPage) || 0,
-    Number(job.maxPage) || 0,
-    Number(job.page) || 0,
-    Math.ceil(rows.length / 12),
-    1,
-  );
+  const ids = [...wantIds].filter((id) => /^[1-9]\d*$/.test(id));
+  const total = ids.length;
+  let done = 0;
+  let labelled = 0;
+  let cursor = 0;
+  let cooldownRounds = 0;
+  let pauseUntil = 0;
+  let stopAll = false;
+  // Same ballpark as upload-meta popup crawl (6). Shared pause on 429 — no hard abandon.
+  const concurrency = Math.max(1, Math.min(4, ids.length || 1));
+  const gapMs = 60;
+  // Persist full index every N ids — writing ~2k rows every 3 was a major stall.
+  const persistEvery = 25;
 
-  let seenWant = 0;
-  let futaBadges = 0;
-  let pagesWithCards = 0;
-
-  for (let page = 1; page <= listMaxPage; page += 1) {
-    await assertIndexJobNotCancelled();
-    await writeIndexJob({
-      ...(await readIndexJob()),
+  const patchProgress = async (pageDone, { persistVideos = true } = {}) => {
+    if (indexJobCancelFlag || stopAll) return;
+    const cur = await readIndexJob();
+    if (cur.cancelRequested || cur.status === 'stopping' || isTerminalJobStatus(cur.status)) {
+      return;
+    }
+    const patch = {
+      ...cur,
       status: 'running',
       phase: 'sex',
-      page: 1,
-      maxPage: 1,
-      listMaxPage,
-      sexFilterPage: page,
-      sexFilterMaxPage: listMaxPage,
-      sexFilterLabel: 'cards',
+      sexFilterLabel: 'detail',
+      sexFilterPage: pageDone,
+      sexFilterMaxPage: Math.max(1, total),
       error: '',
-    });
+    };
+    if (persistVideos) patch.videos = rows;
+    await writeIndexJob(patch);
+  };
+  await patchProgress(0, { persistVideos: true });
 
-    let data;
-    try {
-      data = await fetchIndexPage(job, page, { rateLimitRetries: 6 });
-    } catch (err) {
-      if (err?.code === 'RATE_LIMITED' || /rate limited/i.test(String(err?.message || err))) {
-        await sleepIndexJob(10_000);
-        data = await fetchIndexPage(job, page, { rateLimitRetries: 6 });
-      } else {
+  const waitSharedPause = async () => {
+    while (Date.now() < pauseUntil) {
+      await assertIndexJobNotCancelled();
+      if (stopAll) return;
+      const left = pauseUntil - Date.now();
+      if (left <= 0) break;
+      await sleepIndexJob(Math.min(200, left));
+    }
+  };
+
+  /** One cooldown wave even if several workers hit 429 together. */
+  const armRateLimitCool = async () => {
+    const now = Date.now();
+    if (now < pauseUntil) {
+      await waitSharedPause();
+      return;
+    }
+    cooldownRounds += 1;
+    // 10s → ~5min; keep trying until user Stop (Tag sex is slow; do not give up).
+    const coolMs = Math.min(300_000, Math.round(10_000 * 1.7 ** Math.min(cooldownRounds, 8)));
+    pauseUntil = now + coolMs;
+    await patchProgress(done, { persistVideos: true });
+    await waitSharedPause();
+  };
+
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (true) {
+      try {
+        await assertIndexJobNotCancelled();
+        await waitSharedPause();
+      } catch (err) {
+        if (
+          err?.code === 'INDEX_CANCELLED' ||
+          /index cancelled/i.test(String(err?.message || err))
+        ) {
+          stopAll = true;
+          return;
+        }
+        throw err;
+      }
+      if (stopAll) return;
+      const i = cursor;
+      cursor += 1;
+      if (i >= ids.length) return;
+      const id = ids[i];
+      const row = byId.get(id);
+      if (!row) {
+        done += 1;
+        continue;
+      }
+      let ok = false;
+      // Keep retrying this id across cool-downs until labelled or cancelled.
+      while (!ok && !stopAll) {
+        try {
+          await assertIndexJobNotCancelled();
+          await waitSharedPause();
+        } catch (err) {
+          if (
+            err?.code === 'INDEX_CANCELLED' ||
+            /index cancelled/i.test(String(err?.message || err))
+          ) {
+            stopAll = true;
+            return;
+          }
+          throw err;
+        }
+        if (stopAll) return;
+        try {
+          const label = await classifySexFromVideoDetail(id, row.detailUrl);
+          row.sexGroup = label;
+          labelled += 1;
+          cooldownRounds = 0;
+          ok = true;
+        } catch (err) {
+          const limited =
+            err?.code === 'RATE_LIMITED' ||
+            /rate limited/i.test(String(err?.message || err));
+          if (!limited) break; // leave untagged (non-429 failure)
+          try {
+            await armRateLimitCool();
+          } catch (pauseErr) {
+            if (
+              pauseErr?.code === 'INDEX_CANCELLED' ||
+              /index cancelled/i.test(String(pauseErr?.message || pauseErr))
+            ) {
+              stopAll = true;
+              return;
+            }
+            throw pauseErr;
+          }
+        }
+      }
+      done += 1;
+      if (done === total || done % persistEvery === 0) {
+        await patchProgress(done, { persistVideos: true });
+      } else if (done % 5 === 0) {
+        // UI counter only — avoid rewriting the full video list every few ids.
+        await patchProgress(done, { persistVideos: false });
+      }
+      try {
+        await sleepIndexJob(gapMs);
+      } catch (err) {
+        if (
+          err?.code === 'INDEX_CANCELLED' ||
+          /index cancelled/i.test(String(err?.message || err))
+        ) {
+          stopAll = true;
+          return;
+        }
         throw err;
       }
     }
+  });
 
-    const items = Array.isArray(data?.items) ? data.items : [];
-    if (!items.length) {
-      if (page === 1) {
-        throw new Error('Tag sex page 1 parsed 0 videos — check login / list pages');
-      }
-      break;
-    }
-    pagesWithCards += 1;
-
-    items.forEach((it) => {
-      const id = String(it?.videoId || '').trim();
-      if (!id) return;
-      const row = byId.get(id);
-      if (!row) return;
-      if (delta && !wantIds.has(id)) return;
-      const sex = String(it?.sexGroup || '').trim() || 'straight';
-      row.sexGroup = sex;
-      if (sex === 'futa') futaBadges += 1;
-      if (delta && wantIds.has(id)) seenWant += 1;
+  await Promise.all(workers);
+  // Flush labels even when Stop requested — cancel path commits these to FAV_INDEX.
+  try {
+    const cur = await readIndexJob();
+    await writeIndexJob({
+      ...cur,
+      phase: 'sex',
+      sexFilterLabel: 'detail',
+      sexFilterPage: Math.min(done, total),
+      sexFilterMaxPage: Math.max(1, total),
+      videos: rows,
     });
-
-    if (delta && seenWant >= wantIds.size) break;
-    await sleepIndexJob(120);
+  } catch (_) {
+    /* best-effort */
   }
+  await assertIndexJobNotCancelled();
+  await patchProgress(Math.min(done, total), { persistVideos: true });
 
   const tagged = countSexGroupTagged(rows);
   if (!delta && !tagged) {
-    throw new Error('Tag sex labeled 0 videos — check login / list pages');
-  }
-  if (!delta && rows.length >= 24 && pagesWithCards > 0 && futaBadges === 0) {
     throw new Error(
-      'Tag sex found no Futa badges on list cards — cannot separate Futa/Straight',
+      'Tag sex labeled 0 videos — detail pages returned no usable futanari tags (or rate limited)',
+    );
+  }
+  if (!delta && ids.length >= 8 && labelled === 0 && !resuming) {
+    throw new Error(
+      'Tag sex could not read any video detail pages — wait ~30s and retry Tag sex (site rate limit)',
     );
   }
   return rows;
 }
 
 /**
- * Cheap sex classify for a small set of new ids: parse badges on list page 1.
- * Merges labels into the stored list index.
+ * Cheap sex classify for a small set of new ids: fetch each detail page and
+ * check for a futanari tag (futa) else straight. Merges into the list index.
  */
 let sexClassifyPage1Chain = Promise.resolve();
 
@@ -3410,8 +3671,6 @@ async function classifySexGroupsPage1Unlocked({
   scope = 'favorites',
   videoIds = [],
   playlistId = '',
-  blockId = '',
-  fromKey = '',
 } = {}) {
   const scopeKey = String(scope || 'favorites').trim() || 'favorites';
   const want = new Set(
@@ -3440,21 +3699,65 @@ async function classifySexGroupsPage1Unlocked({
   if (!videos.length) {
     throw new Error('No list index to enrich — click Build index first');
   }
-  const job = {
-    scope: scopeKey,
-    playlistId: scopeKey === 'favorites' ? '' : pid,
-    blockId: String(blockId || '').trim(),
-    fromKey: String(fromKey || '').trim(),
-    listMaxPage: 1,
-    startMaxPage: 1,
-  };
-  const data = await fetchIndexPage(job, 1, { rateLimitRetries: 4 });
+
   const found = Object.create(null);
-  (Array.isArray(data?.items) ? data.items : []).forEach((it) => {
-    const id = String(it?.videoId || '').trim();
-    if (!id || !want.has(id)) return;
-    found[id] = String(it?.sexGroup || '').trim() || 'straight';
+  const ids = [...want];
+  let cursor = 0;
+  let cooldownRounds = 0;
+  let pauseUntil = 0;
+  let stopAll = false;
+  const concurrency = Math.max(1, Math.min(4, ids.length || 1));
+  const byDetail = new Map(
+    videos.map((v) => [String(v?.videoId || '').trim(), String(v?.detailUrl || '').trim()]),
+  );
+  const waitSharedPause = async () => {
+    while (Date.now() < pauseUntil) {
+      if (stopAll) return;
+      const left = pauseUntil - Date.now();
+      if (left <= 0) break;
+      await new Promise((r) => setTimeout(r, Math.min(200, left)));
+    }
+  };
+  const armRateLimitCool = async () => {
+    const now = Date.now();
+    if (now < pauseUntil) {
+      await waitSharedPause();
+      return;
+    }
+    cooldownRounds += 1;
+    const coolMs = Math.min(300_000, Math.round(10_000 * 1.7 ** Math.min(cooldownRounds, 8)));
+    pauseUntil = now + coolMs;
+    await waitSharedPause();
+  };
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (true) {
+      await waitSharedPause();
+      if (stopAll) return;
+      const i = cursor;
+      cursor += 1;
+      if (i >= ids.length) return;
+      const id = ids[i];
+      let ok = false;
+      while (!ok && !stopAll) {
+        await waitSharedPause();
+        if (stopAll) return;
+        try {
+          found[id] = await classifySexFromVideoDetail(id, byDetail.get(id) || '');
+          cooldownRounds = 0;
+          ok = true;
+        } catch (err) {
+          const limited =
+            err?.code === 'RATE_LIMITED' ||
+            /rate limited/i.test(String(err?.message || err));
+          if (!limited) break; // leave missing → remaining
+          await armRateLimitCool();
+        }
+      }
+      await new Promise((r) => setTimeout(r, 60));
+    }
   });
+  await Promise.all(workers);
+
   let tagged = 0;
   const nextVideos = videos.map((v) => {
     const id = String(v?.videoId || '').trim();
@@ -3464,12 +3767,18 @@ async function classifySexGroupsPage1Unlocked({
     return { ...v, sexGroup: label };
   });
   if (tagged) {
+    const remainingAfter = nextVideos.reduce(
+      (n, v) => n + (String(v?.sexGroup || '').trim() ? 0 : 1),
+      0,
+    );
     await setFavIndex(
       {
         builtAt: Number(existing?.builtAt) || Date.now(),
         favTotal: nextVideos.length,
         videos: nextVideos,
         scope: scopeKey,
+        sexMembershipSig:
+          remainingAfter > 0 ? sexMembershipSigFromVideos(nextVideos) : '',
       },
       scopeKey,
     );
@@ -3496,6 +3805,16 @@ async function writeIndexJob(job) {
   const run = async () => {
     const cur = await readIndexJob();
     const next = { ...idleIndexJob(), ...job, updatedAt: Date.now() };
+    // Stale Tag sex / crawl progress must not revive a finished job.
+    // Stop → stopped, then an in-flight patchProgress({status:'running'}) used to
+    // resurrect the job; status polls then called runIndexJob() again.
+    if (
+      isTerminalJobStatus(cur.status) &&
+      !isTerminalJobStatus(next.status) &&
+      Number(next.startedAt) <= Number(cur.startedAt || 0)
+    ) {
+      return cur;
+    }
     // Progress patches often spread a pre-fetch snapshot (cancelRequested:false,
     // status:'running'). Never let those undo an in-flight Stop.
     if (!isTerminalJobStatus(next.status) && (cur.cancelRequested || cur.status === 'stopping' || indexJobCancelFlag)) {
@@ -3531,6 +3850,11 @@ async function stopIndexJob() {
     return publicIndexJobStatus(job);
   }
   indexJobCancelFlag = true;
+  try {
+    await chrome.alarms?.clear?.('hxyrule-index');
+  } catch (_) {
+    /* optional */
+  }
   const next = await writeIndexJob({
     ...job,
     status: 'stopping',
@@ -3671,6 +3995,7 @@ async function startIndexJob({
     listMaxPage,
     sexFilterPage: 0,
     sexFilterMaxPage: 0,
+    sexFilterLabel: '',
     sexOnly: wantSex,
     mode: crawlMode,
     targetIds: sexTargets,
@@ -3724,12 +4049,25 @@ function runIndexJob() {
         let job = await readIndexJob();
         if (job.status !== 'running' && job.status !== 'stopping') break;
         if (job.cancelRequested || job.status === 'stopping' || indexJobCancelFlag) {
+          // Sex-only jobs may already have partial labels in job.videos — keep them.
+          if (
+            String(job.phase || '') === 'sex' ||
+            job.sexOnly ||
+            String(job.mode || '') === 'sex' ||
+            String(job.mode || '') === 'sex-delta'
+          ) {
+            try {
+              await commitPartialSexVideos(job.scope, job.videos);
+            } catch (_) {
+              /* keep Stop reliable */
+            }
+          }
           await writeIndexJob({
             ...job,
             status: 'stopped',
             cancelRequested: false,
             phase: '',
-            // Drop partial crawl; keep previous FAV_INDEX_* untouched.
+            // Drop job payload; list crawl cancel leaves FAV_INDEX_* untouched.
             videos: [],
             error: '',
           });
@@ -3758,8 +4096,17 @@ function runIndexJob() {
               err?.code === 'INDEX_CANCELLED' ||
               /index cancelled/i.test(String(err?.message || err))
             ) {
+              const cur = await readIndexJob();
+              try {
+                await commitPartialSexVideos(
+                  cur.scope || job.scope,
+                  cur.videos?.length ? cur.videos : videos,
+                );
+              } catch (_) {
+                /* keep Stop reliable */
+              }
               await writeIndexJob({
-                ...(await readIndexJob()),
+                ...cur,
                 status: 'stopped',
                 cancelRequested: false,
                 phase: '',
@@ -3772,6 +4119,11 @@ function runIndexJob() {
           }
           job = await readIndexJob();
           if (job.cancelRequested || job.status === 'stopping' || indexJobCancelFlag) {
+            try {
+              await commitPartialSexVideos(job.scope, videos);
+            } catch (_) {
+              /* keep Stop reliable */
+            }
             await writeIndexJob({
               ...job,
               status: 'stopped',
@@ -3793,6 +4145,13 @@ function runIndexJob() {
               favTotal: videos.length,
               videos,
               scope: job.scope,
+              sexMembershipSig: (() => {
+                const left = videos.reduce(
+                  (n, v) => n + (String(v?.sexGroup || '').trim() ? 0 : 1),
+                  0,
+                );
+                return left > 0 ? sexMembershipSigFromVideos(videos) : '';
+              })(),
             },
             job.scope,
           );
@@ -4120,6 +4479,13 @@ async function writeRenumberJob(job) {
   const run = async () => {
     const cur = await readRenumberJob();
     const next = { ...idleRenumberJob(), ...job, updatedAt: Date.now() };
+    if (
+      isTerminalJobStatus(cur.status) &&
+      !isTerminalJobStatus(next.status) &&
+      Number(next.startedAt) <= Number(cur.startedAt || 0)
+    ) {
+      return cur;
+    }
     if (!isTerminalJobStatus(next.status) && (cur.cancelRequested || cur.status === 'stopping' || renumberJobCancelFlag)) {
       next.cancelRequested = true;
       next.status = 'stopping';
@@ -4477,6 +4843,13 @@ async function writePlaylistAddJob(job) {
   const run = async () => {
     const cur = await readPlaylistAddJob();
     const next = { ...idlePlaylistAddJob(), ...job, updatedAt: Date.now() };
+    if (
+      isTerminalJobStatus(cur.status) &&
+      !isTerminalJobStatus(next.status) &&
+      Number(next.startedAt) <= Number(cur.startedAt || 0)
+    ) {
+      return cur;
+    }
     if (
       !isTerminalJobStatus(next.status) &&
       (cur.cancelRequested || cur.status === 'stopping' || playlistAddJobCancelFlag)
@@ -4940,6 +5313,13 @@ async function writeFavAddJob(job) {
   const run = async () => {
     const cur = await readFavAddJob();
     const next = { ...idleFavAddJob(), ...job, updatedAt: Date.now() };
+    if (
+      isTerminalJobStatus(cur.status) &&
+      !isTerminalJobStatus(next.status) &&
+      Number(next.startedAt) <= Number(cur.startedAt || 0)
+    ) {
+      return cur;
+    }
     if (
       !isTerminalJobStatus(next.status) &&
       (cur.cancelRequested || cur.status === 'stopping' || favAddJobCancelFlag)
