@@ -904,6 +904,35 @@
     return parseDurationSec(timeEl.textContent);
   }
 
+  /** Duration on a video detail page (info rows / player), when no list card .time. */
+  function detailPageDurationSec() {
+    const prefer = [
+      qs(document, '.video-info'),
+      qs(document, '.info-holder'),
+      qs(document, '.block-video'),
+      qs(document, '.player'),
+    ].filter(Boolean);
+    const roots = prefer.length ? prefer : [document.body].filter(Boolean);
+    for (const root of roots) {
+      const nodes = qsa(root, '.time, [class*="duration"]');
+      for (const el of nodes) {
+        const d = parseDurationSec(el.textContent);
+        if (d != null && d > 0) return d;
+      }
+      const labeled = String(root.textContent || '').match(
+        /duration\s*[:：]?\s*(\d+:\d{1,2}(?::\d{1,2})?)/i,
+      );
+      if (labeled) {
+        const d = parseDurationSec(labeled[1]);
+        if (d != null && d > 0) return d;
+      }
+    }
+    const video = qs(document, 'video');
+    const vd = video && Number(video.duration);
+    if (Number.isFinite(vd) && vd > 0) return Math.round(vd);
+    return null;
+  }
+
   /** Absolute preview URL; skip lazy placeholders. */
   function normalizeThumbUrl(raw) {
     let u = String(raw || '').trim();
@@ -983,6 +1012,52 @@
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
+  /** Page URL for a video id. Ignore candidates that point at a different id.
+   * Site 404s on bare `/video/{id}/` — keep slug paths; otherwise use `/v/`. */
+  function detailUrlForVideoId(videoId, candidate = '') {
+    const id = String(videoId || '').trim();
+    if (!/^\d+$/.test(id)) return '';
+    const raw = String(candidate || '').trim();
+    // Must be /video/{id}/… — never trust /popup-video/… or another id's page.
+    if (
+      raw &&
+      /(?:^|https?:\/\/[^/]+)\/video\/\d+\//i.test(raw) &&
+      !/\/popup-video\//i.test(raw) &&
+      raw.includes(`/video/${id}/`)
+    ) {
+      const abs = raw.startsWith('http') ? raw : `https://rule34video.com${raw}`;
+      // Bare `/video/{id}/` → `/video/{id}/v/` (site requirement).
+      try {
+        const path = new URL(abs).pathname;
+        if (/^\/videos?\/\d+\/?$/i.test(path)) {
+          return `https://rule34video.com/video/${id}/v/`;
+        }
+      } catch (_) {
+        /* keep abs */
+      }
+      return abs;
+    }
+    return `https://rule34video.com/video/${id}/v/`;
+  }
+
+  function popupUrlForVideoId(videoId) {
+    const id = String(videoId || '').trim();
+    if (!/^\d+$/.test(id)) return '';
+    return `https://rule34video.com/popup-video/${id}/?popup_id=1`;
+  }
+
+  /** True when href is a watch/popup URL whose id differs from wantId. */
+  function hrefVideoIdMismatch(href, wantId) {
+    const id = String(wantId || '').trim();
+    if (!id || !href) return false;
+    const popup = String(href).match(/\/popup-video\/(\d+)\//i);
+    if (popup) return popup[1] !== id;
+    // Do not treat /popup-video/N/ as /video/N/ via substring.
+    const page = String(href).match(/(?:^|https?:\/\/[^/]+)\/video\/(\d+)\//i);
+    if (page) return page[1] !== id;
+    return false;
+  }
+
   function parseCards() {
     const page = currentPageNumber();
     const compactRoot = qs(document, `.${NS}-compact-thumbs`);
@@ -1022,7 +1097,7 @@
       return {
         el,
         videoId: String(videoId),
-        detailUrl: link?.href || `https://rule34video.com/video/${videoId}/`,
+        detailUrl: link?.href || `https://rule34video.com/video/${videoId}/v/`,
         title: String(rawTitle).trim(),
         favoritePage: Number.isInteger(favPage) && favPage > 0 ? favPage : page,
         cardIndex: Number.isInteger(cardIdx) && cardIdx >= 0 ? cardIdx : index,
@@ -1065,20 +1140,26 @@
       0;
     const cur = nativeListCardCount();
     const curPage = currentPageNumber();
-    // A non-last page is always full — lock that as the page size.
+    const inferred =
+      total > 0 && maxP > 1 ? Math.max(1, Math.ceil(total / maxP)) : 0;
+    // A non-last page is normally full — lock that as the page size.
+    // After Unfavorite we surgically remove cards mid-page; never shrink an
+    // existing lock (or inferred size) to that short count — Compact / List
+    // would then paint fewer cards and leave empty slots until a full refresh.
     if (Number.isInteger(curPage) && maxP > 1 && curPage < maxP && cur > 0) {
-      stablePerPage = cur;
-      return cur;
+      const floor = Math.max(stablePerPage || 0, inferred || 0);
+      if (!floor || cur >= floor) {
+        stablePerPage = cur;
+        return cur;
+      }
+      return floor;
     }
     if (stablePerPage && stablePerPage > 0) return stablePerPage;
     // Infer from total/maxPage so last-page short counts never poison preferredSeq
     // or Compact paging (refresh on page 2 used to lock 11 → infer 6).
-    if (total > 0 && maxP > 1) {
-      const inferred = Math.ceil(total / maxP);
-      if (inferred > 0) {
-        stablePerPage = inferred;
-        return inferred;
-      }
+    if (inferred > 0) {
+      stablePerPage = inferred;
+      return inferred;
     }
     if (maxP <= 1 && cur > 0) {
       stablePerPage = cur;
@@ -1126,6 +1207,36 @@
     card.ordinal = seq;
   }
 
+  /**
+   * Newest-first pages must show descending seq. An ascending run at the front
+   * (e.g. 2563, 2564, 2562…) means refavorites kept mid-range ordinals — claim
+   * fresh max+1… for that prefix (DOM order = newest first).
+   */
+  function ascendingOrdinalPrefixLen(cards, map) {
+    if (cards.length < 2) return 0;
+    let end = 0;
+    while (
+      end + 1 < cards.length &&
+      Number(map[cards[end].videoId]) > 0 &&
+      Number(map[cards[end + 1].videoId]) > 0 &&
+      Number(map[cards[end].videoId]) < Number(map[cards[end + 1].videoId])
+    ) {
+      end += 1;
+    }
+    return end > 0 ? end + 1 : 0;
+  }
+
+  async function claimNewestOrdinals(videoIds) {
+    const ids = [...new Set((videoIds || []).map(String).filter((id) => /^\d+$/.test(id)))];
+    if (!ids.length) return {};
+    try {
+      const data = await send('HELPER_ORDINALS_CLAIM_NEWEST', { videoIds: ids });
+      return data?.ordinals || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
   async function applyOrdinalsToCards(cards) {
     if (!cards.length) return;
     const total = scanFavTotal || detectFavoritesTotal() || cards.length;
@@ -1135,8 +1246,15 @@
       preferredSeq: preferredSeqForCard(c, total, perPage),
     }));
     try {
-      const data = await send('HELPER_ORDINALS_ENSURE', { items });
-      const map = data.ordinals || {};
+      let data = await send('HELPER_ORDINALS_ENSURE', { items });
+      let map = { ...(data.ordinals || {}) };
+      const prefix = ascendingOrdinalPrefixLen(cards, map);
+      if (prefix > 0) {
+        const claimed = await claimNewestOrdinals(
+          cards.slice(0, prefix).map((c) => c.videoId),
+        );
+        Object.assign(map, claimed);
+      }
       cards.forEach((card) => {
         const seq = map[card.videoId];
         if (seq == null) return;
@@ -1398,20 +1516,22 @@
   }
 
   /**
-   * Recover a wiped card grid. compact-active + hidden native without compact
-   * cards, or hide-native stamped on a page branch, left an empty list page.
+   * Recover a wiped card grid when hide-native was stamped on a page branch
+   * but Compact never mounted. Zero-match Compact (empty host + compact pager)
+   * is valid — do not reveal the native grid in that state.
    */
   function ensureCardGridVisible() {
     const compactHost = qs(document, `.${NS}-compact-thumbs`);
     const compactCards = compactHost
       ? qsa(compactHost, `.item.thumb[data-hxyrule-compact="1"]`).length
       : 0;
-    // Healthy Compact — leave native hide alone.
-    if (compactCards > 0) return;
+    // Healthy Compact (including 0 matches) — leave native hide alone.
+    if (compactViewActive || compactCards > 0) return;
     // Mid Compact boot: keep pending card hide (class only; no blank shell).
     if (
       (viewRestorePending || filterRunning) &&
-      normalizeViewMode(viewMode) === 'compact'
+      (normalizeViewMode(viewMode) === 'compact' ||
+        normalizeViewMode(viewMode) === 'selected')
     ) {
       return;
     }
@@ -2500,6 +2620,7 @@
   let statusFlashIsError = false;
   let statusFlashTimer = null;
   let statusLive = 'Ready';
+  let offpageStatusTimer = null;
   const STATUS_LOG_LIMIT = 200;
   const statusLog = [];
   let taskQueueState = { items: [], paused: false };
@@ -2673,6 +2794,65 @@
       const closeBtn = qs(dialog, 'button[value="close"], button[value="cancel"]');
       (closeBtn || dialog).focus?.();
     });
+  }
+
+  /**
+   * Compact top-right status chip for video / other non-library pages.
+   * Does not mount the Favorites toolbar; click opens the full status log.
+   */
+  function ensureOffpageStatusToast() {
+    let el = qs(document, `.${NS}-offpage-status`);
+    if (el) return el;
+    el = document.createElement('div');
+    el.className = `${NS}-msgbar ${NS}-error ${NS}-offpage-status`;
+    el.dataset.role = 'offpage-status';
+    el.dataset.hxyrule = '1';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.setAttribute('aria-label', 'Status');
+    el.hidden = true;
+    const inner = document.createElement('span');
+    inner.className = `${NS}-message-text`;
+    el.appendChild(inner);
+    bindStatusLogUi(el);
+    (document.body || document.documentElement).appendChild(el);
+    return el;
+  }
+
+  function hideOffpageStatusToast() {
+    if (offpageStatusTimer) {
+      clearTimeout(offpageStatusTimer);
+      offpageStatusTimer = null;
+    }
+    const el = qs(document, `.${NS}-offpage-status`);
+    if (el) el.hidden = true;
+  }
+
+  function showOffpageStatusToast(text, isError = false) {
+    const msg = String(text || '').trim();
+    if (!msg || msg === 'Ready') {
+      hideOffpageStatusToast();
+      return;
+    }
+    const el = ensureOffpageStatusToast();
+    if (!document.body?.contains(el)) {
+      (document.body || document.documentElement).appendChild(el);
+    }
+    let inner = qs(el, `.${NS}-message-text`);
+    if (!inner) {
+      inner = document.createElement('span');
+      inner.className = `${NS}-message-text`;
+      el.replaceChildren(inner);
+    }
+    inner.textContent = msg;
+    el.classList.toggle('is-error', !!isError);
+    el.hidden = false;
+    el.removeAttribute('hidden');
+    if (offpageStatusTimer) clearTimeout(offpageStatusTimer);
+    offpageStatusTimer = setTimeout(() => {
+      offpageStatusTimer = null;
+      el.hidden = true;
+    }, 3200);
   }
 
   function taskQueueItemFullTitle(item) {
@@ -3076,7 +3256,7 @@
         <div class="${NS}-dialog-actions">
           <button type="button" class="${NS}-btn" data-act="tasks-pause" disabled>Pause</button>
           <button type="button" class="${NS}-btn" data-act="tasks-resume" disabled>Resume</button>
-          <button type="button" class="${NS}-btn" data-act="tasks-delete" disabled>Delete</button>
+          <button type="button" class="${NS}-btn ${NS}-btn--danger" data-act="tasks-delete" disabled>Delete</button>
           <button type="submit" class="${NS}-btn" value="cancel">Close</button>
         </div>
       </form>
@@ -3191,11 +3371,23 @@
   }
 
   function paintStatus() {
+    const text = (statusFlash || statusLive || 'Ready').trim() || 'Ready';
+    const isError = !!statusFlash && statusFlashIsError;
+    // Video / other pages: never mount the Favorites toolbar just to show
+    // status (e.g. sex auto-tag after heart). Top-right chip only.
+    if (!isFavoritesPage() && !isPlaylistDetailPage()) {
+      if (text === 'Ready') {
+        hideOffpageStatusToast();
+        return;
+      }
+      pushStatusLog(text, isError);
+      showOffpageStatusToast(text, isError);
+      return;
+    }
+    hideOffpageStatusToast();
     const el = ensureStatusBar();
     el.hidden = false;
     el.removeAttribute('hidden');
-    const text = (statusFlash || statusLive || 'Ready').trim() || 'Ready';
-    const isError = !!statusFlash && statusFlashIsError;
     el.classList.remove('is-scroll-test');
     let inner = qs(el, `.${NS}-message-text`);
     if (!inner) {
@@ -3232,7 +3424,16 @@
     statusLive = next;
     if (statusFlash) {
       // Chip still shows a flash; still record queue transitions in the log.
-      if (changed) pushStatusLog(statusLive, false);
+      if (changed) {
+        pushStatusLog(statusLive, false);
+        if (
+          statusLive !== 'Ready' &&
+          !isFavoritesPage() &&
+          !isPlaylistDetailPage()
+        ) {
+          showOffpageStatusToast(statusLive, false);
+        }
+      }
       return;
     }
     paintStatus();
@@ -3240,6 +3441,16 @@
 
   /** Status chip on the command rail (flash message or live queue state). */
   function ensureStatusBar() {
+    // Off library pages there is no toolbar; callers must not force-create one.
+    if (!isFavoritesPage() && !isPlaylistDetailPage()) {
+      ensureStatusLogDialog();
+      return (
+        qs(document, `.${NS}-msgbar[data-role="status"]`) ||
+        qs(document, `.${NS}-error[data-role="error"]`) ||
+        qs(document, `.${NS}-error[data-role="status"]`) ||
+        null
+      );
+    }
     const controls = qs(document, `.${NS}-controls`) || ensureControls();
     const rail = qs(controls, `.${NS}-rail-command`) || controls;
     let status =
@@ -3699,7 +3910,7 @@
               ? href
               : href
                 ? `https://rule34video.com${href}`
-                : `https://rule34video.com/video/${videoId}/`,
+                : `https://rule34video.com/video/${videoId}/v/`,
             title: String(rawTitle).trim(),
             favoritePage: pageNum,
             cardIndex: index,
@@ -3721,7 +3932,7 @@
       seen.add(id);
       items.push({
         videoId: id,
-        detailUrl: `https://rule34video.com/video/${id}/`,
+        detailUrl: `https://rule34video.com/video/${id}/v/`,
         title: id,
         favoritePage: pageNum,
         cardIndex: index,
@@ -4467,12 +4678,6 @@
     }
   }
 
-  function placeToolbar(_bar) {
-    hideNativeControls();
-    ensureControls();
-    layoutTopControls();
-  }
-
   function findNativeJumpControls() {
     const pag = currentListPaginationEl();
     const scope =
@@ -4553,7 +4758,11 @@
     if (!html) return false;
     const doc = new DOMParser().parseFromString(html, 'text/html');
 
-    const curItems = listRoot();
+    // Always replace the *native* list — never listRoot() while Compact is
+    // active (that points at .hxyrule-compact-thumbs). Writing site HTML into
+    // the compact host strips data-hxyrule-compact markers; ensureCardGridVisible
+    // then unhides the native grid and the user sees 12 junk cards + 12 real ones.
+    const curItems = favoritesListEl();
     const newItems = firstMatch(doc, [
       '#list_videos_my_favourite_videos_items',
       '#list_videos_common_videos_list_items',
@@ -4860,6 +5069,45 @@
       seqInput.disabled = true;
       pageInput.disabled = true;
       try {
+        // Compact Pages owns the match list — Jump seq must target compact pages
+        // (native goToFavoritesPage would replace/unhide the wrong grid).
+        if (compactViewActive) {
+          const info = await send('HELPER_ORDINALS_BY_SEQ', { seq });
+          if (!info?.found || !info.videoId) {
+            throw new Error(
+              `Seq ${seq} not found (run Renumber or browse that video first)`,
+            );
+          }
+          const videoId = String(info.videoId);
+          const idx = compactMatchedItems.findIndex(
+            (v) => String(v?.videoId) === videoId,
+          );
+          if (idx < 0) {
+            throw new Error(`Seq ${seq} is not in the current Compact list`);
+          }
+          const per = compactPerPage();
+          const page = Math.floor(idx / per) + 1;
+          const max = compactPageCount();
+          if (page > max) {
+            setError(`Compact has ${max} page${max === 1 ? '' : 's'}`);
+            return;
+          }
+          pageInput.value = String(page);
+          if (page !== compactPage) await goCompactPage(page);
+          const host = qs(document, `.${NS}-compact-thumbs`);
+          const cardEl = qsa(
+            host || document,
+            `.item.thumb[data-hxyrule-compact="1"]`,
+          ).find((el) => {
+            const box =
+              qs(el, 'input.checkbox[name="delete[]"]') ||
+              qs(el, 'input[name="delete[]"]') ||
+              qs(el, 'input[type="checkbox"]');
+            return String(box?.value || '') === videoId;
+          });
+          cardEl?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+          return;
+        }
         const hit = await findPageForOrdinal(seq);
         pageInput.value = String(hit.page);
         const ok = await goToFavoritesPage(hit.page);
@@ -4975,6 +5223,9 @@
   /** Persisted Select page-range inputs (survive control rebuilds). */
   let selectStartSaved = '';
   let selectEndSaved = '';
+  /** Persisted Select seq-range inputs (title prefix / Renumber ordinals). */
+  let selectSeqStartSaved = '';
+  let selectSeqEndSaved = '';
   /** Guard so compact-page upload-meta fetches do not clobber a newer page. */
   let uploadMetaEnrichGen = 0;
   /** Debounce Compact / Show matches refresh after Match rule edits (esp. Duration). */
@@ -5034,23 +5285,35 @@
       viewMode: 'compact',
       selectStart: '',
       selectEnd: '',
+      selectSeqStart: '',
+      selectSeqEnd: '',
       compactSortKey: defaultCompactSortKey(),
       toolbarMiddleCollapsed: false,
     };
   }
 
   function normalizeViewMode(raw) {
-    if (raw === 'compact' || raw === 'matches' || raw === 'all') return raw;
+    if (
+      raw === 'compact' ||
+      raw === 'matches' ||
+      raw === 'all' ||
+      raw === 'selected'
+    ) {
+      return raw;
+    }
     return 'compact';
   }
 
   /** View seg highlight: trust persisted/target mode while a View apply is in flight. */
   function uiViewMode() {
     if (viewRestorePending || filterRunning) return normalizeViewMode(viewMode);
-    if (compactViewActive) return 'compact';
+    if (compactViewActive) {
+      return normalizeViewMode(viewMode) === 'selected' ? 'selected' : 'compact';
+    }
     // Persisted Compact intent wins over a stale active match set (boot used to
     // highlight Show matches when Compact mount failed after setting active).
-    if (normalizeViewMode(viewMode) === 'compact') return 'compact';
+    const mode = normalizeViewMode(viewMode);
+    if (mode === 'compact' || mode === 'selected') return mode;
     if (filterState.active) return 'matches';
     return 'all';
   }
@@ -5080,10 +5343,31 @@
     });
   }
 
+  /**
+   * After Compact / pending hide, native thumbs are display:none while reload
+   * may have already run lazyload. Kick again once they have layout.
+   */
+  function kickNativeThumbLazyloadAfterReveal() {
+    const run = () => {
+      try {
+        reinitPageThumbLazyload();
+      } catch (_) {
+        /* ignore */
+      }
+    };
+    run();
+    requestAnimationFrame(() => {
+      run();
+      setTimeout(run, 120);
+    });
+  }
+
   function readSelectRangeFromDom() {
     const bar = qs(document, `.${NS}-controls`) || document;
     const startEl = qs(bar, '[data-role="select-start"]');
     const endEl = qs(bar, '[data-role="select-end"]');
+    const seqStartEl = qs(bar, '[data-role="select-seq-start"]');
+    const seqEndEl = qs(bar, '[data-role="select-seq-end"]');
     return {
       selectStart: startEl
         ? String(startEl.value || '').trim()
@@ -5091,6 +5375,12 @@
       selectEnd: endEl
         ? String(endEl.value || '').trim()
         : String(selectEndSaved || ''),
+      selectSeqStart: seqStartEl
+        ? String(seqStartEl.value || '').trim()
+        : String(selectSeqStartSaved || ''),
+      selectSeqEnd: seqEndEl
+        ? String(seqEndEl.value || '').trim()
+        : String(selectSeqEndSaved || ''),
     };
   }
 
@@ -5098,14 +5388,19 @@
     const range = readSelectRangeFromDom();
     selectStartSaved = range.selectStart;
     selectEndSaved = range.selectEnd;
+    selectSeqStartSaved = range.selectSeqStart;
+    selectSeqEndSaved = range.selectSeqEnd;
     // Prefer live Compact DOM over a stale viewMode / active-match pair.
+    const savedMode = normalizeViewMode(viewMode);
     const liveMode = compactViewActive
-      ? 'compact'
-      : normalizeViewMode(viewMode) === 'compact'
-        ? 'compact'
+      ? savedMode === 'selected'
+        ? 'selected'
+        : 'compact'
+      : savedMode === 'compact' || savedMode === 'selected'
+        ? savedMode
         : filterState.active
           ? 'matches'
-          : normalizeViewMode(viewMode);
+          : savedMode;
     return {
       localOn: !!filterState.localOn,
       cloudOn: !!filterState.cloudOn,
@@ -5119,6 +5414,8 @@
       viewMode: normalizeViewMode(liveMode),
       selectStart: selectStartSaved,
       selectEnd: selectEndSaved,
+      selectSeqStart: selectSeqStartSaved,
+      selectSeqEnd: selectSeqEndSaved,
       compactSortKey: parseCompactSortKey(compactSortKey).key,
       toolbarMiddleCollapsed: !!toolbarMiddleCollapsed,
     };
@@ -5158,7 +5455,12 @@
     const endIn = qs(bar, '[data-role="select-end"]');
     if (startIn) startIn.value = selectStartSaved || '';
     if (endIn) endIn.value = selectEndSaved || '';
+    const seqStartIn = qs(bar, '[data-role="select-seq-start"]');
+    const seqEndIn = qs(bar, '[data-role="select-seq-end"]');
+    if (seqStartIn) seqStartIn.value = selectSeqStartSaved || '';
+    if (seqEndIn) seqEndIn.value = selectSeqEndSaved || '';
     syncPageRangePlaceholders();
+    syncSeqRangeClamp();
   }
 
   function applyToolbarFilters(raw) {
@@ -5190,6 +5492,8 @@
     viewMode = normalizeViewMode(f.viewMode);
     selectStartSaved = String(f.selectStart || '');
     selectEndSaved = String(f.selectEnd || '');
+    selectSeqStartSaved = String(f.selectSeqStart || '');
+    selectSeqEndSaved = String(f.selectSeqEnd || '');
     const bar = qs(document, `.${NS}-controls`) || qs(document, `.${NS}-filterbar`);
     syncToolbarInputsFromState();
     syncToolbarMiddleCollapsed(bar);
@@ -5214,10 +5518,19 @@
   async function restoreToolbarView({ ensureIndex = true } = {}) {
     const gen = ++restoreViewGeneration;
     const mode = normalizeViewMode(viewMode);
-    viewRestorePending = mode === 'compact' || mode === 'matches';
-    if (mode === 'compact') hideNativeListForPendingCompact();
+    viewRestorePending =
+      mode === 'compact' || mode === 'matches' || mode === 'selected';
+    if (mode === 'compact' || mode === 'selected') hideNativeListForPendingCompact();
     updateFilterBarLabels();
     try {
+      if (mode === 'selected') {
+        try {
+          await applySelectedCompactView({ quiet: true });
+        } catch (_) {
+          /* selection or index may be unavailable */
+        }
+        return;
+      }
       if (mode === 'compact') {
         try {
           await applyCompactMatchesView({ ensureIndex, quiet: true });
@@ -5532,7 +5845,7 @@
           `.${NS}-controls [data-act="compact-sort-field"][data-sort-field="${field}"]`,
         );
         const label = activeField?.dataset?.sortLabel || field;
-        setFlash(`Compact sort · ${label} ${desc ? '↓' : '↑'}`);
+        setFlash(`Matches sort · ${label} ${desc ? '↓' : '↑'}`);
       }
     }
   }
@@ -5587,6 +5900,7 @@
       if (onlinePlaybackSession?.surface) {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         toggleOnlineSurfaceFullscreen(onlinePlaybackSession);
       }
       return;
@@ -5596,8 +5910,8 @@
     e.stopPropagation();
     toggleToolbarMiddle();
   }
-  // Handler existed but was never bound — F did nothing until this listener.
-  document.addEventListener('keydown', onToggleToolbarHotkey, true);
+  // Window capture beats site player F handlers; document alone can lose the race.
+  window.addEventListener('keydown', onToggleToolbarHotkey, true);
   /**
    * Snapshot of a live native card (clone + pixel metrics) taken before the
    * native grid is hidden. Reused across compact pages so getComputedStyle on
@@ -5632,10 +5946,6 @@
   /** Both on = no Futa/Straight restriction (Gay/Music/Iwara/unknown still shown). */
   function sexFilterIsAll() {
     return filterState.futaOn && filterState.straightOn;
-  }
-
-  function filterIsAll() {
-    return diskFilterIsAll() && collectionFilterIsAll() && sexFilterIsAll();
   }
 
   function videoSexGroupSet(video) {
@@ -5706,10 +6016,6 @@
     return prev !== sexMembershipSigFromVideos(videos);
   }
 
-  function indexVideosHaveSexGroups(videos) {
-    return indexHasSexBaseline(videos);
-  }
-
   /** Newest-first page size guess for "small add → page-1 sex classify". */
   const SEX_AUTO_PAGE1_MAX = 12;
 
@@ -5774,6 +6080,9 @@
   function pruneIdsFromActiveMatchView(ids) {
     const want = new Set((ids || []).map(String).filter(Boolean));
     if (!want.size) return;
+    // Compact hides the native grid; always drop those nodes too so List /
+    // List (match) do not keep unfavorited videos until a full refresh.
+    removeListCardsByIds([...want]);
     const hadView = !!(filterState.active || filterState.matchedIds || compactViewActive);
     if (!hadView) {
       updateFilterBarLabels();
@@ -5831,6 +6140,8 @@
     const keepMode = uiViewMode();
     updateFilterBarLabels();
     saveFilterState().catch(() => {});
+    // Show selected ignores Match chips — keep the selection Compact as-is.
+    if (keepMode === 'selected') return;
     if (keepMode !== 'compact' && keepMode !== 'matches') return;
     viewMode = keepMode;
     scheduleMatchViewReapply({ immediate });
@@ -5874,6 +6185,57 @@
     }
   }
 
+  /**
+   * Re-paint the whole video card area for the active View after the list index
+   * or membership changes (Rebuild index, Unfavorite, Remove from list).
+   * Index is assumed fresh in cache when ensureIndex is false.
+   */
+  async function refreshActiveCardArea({ quiet = true, ensureIndex = false } = {}) {
+    if (!isFavoritesPage() && !isPlaylistDetailPage()) return;
+    const mode = uiViewMode();
+    if (mode === 'selected') {
+      try {
+        await applySelectedCompactView({ quiet });
+      } catch (_) {
+        /* selection or index may be unavailable */
+      }
+      return;
+    }
+    if (mode === 'compact') {
+      try {
+        await applyCompactMatchesView({ ensureIndex, quiet, force: true });
+      } catch (_) {
+        /* index may be unavailable */
+      }
+      return;
+    }
+    if (mode === 'matches') {
+      try {
+        await applyLibraryFilter({ ensureIndex, quiet, force: true });
+      } catch (_) {
+        /* index may be unavailable */
+      }
+      return;
+    }
+    // Show all: native grid membership is site-owned; refresh seq + local marks.
+    try {
+      const cards = parseCards();
+      await applyOrdinalsToCards(cards);
+      const matches = lastMatches || {};
+      cards.forEach((card) => renderStatus(card, matches[card.videoId], scanned));
+      syncCurrentPageLocalMark(cards, matches);
+      scheduleEvaluateVisiblePages();
+      if (!(bootInProgress && !scanned)) {
+        await refreshLookup().catch(() => {});
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    ensureCardGridVisible();
+    updateFilterBarLabels();
+    updateToolbarLabels();
+  }
+
   function indexCountDrifted(liveTotal, indexed) {
     const live = Number(liveTotal) || 0;
     const n = Number(indexed) || 0;
@@ -5892,7 +6254,7 @@
         return {
           videoId: key,
           title: hit.title || key,
-          detailUrl: hit.detailUrl || `https://rule34video.com/video/${key}/`,
+          detailUrl: hit.detailUrl || `https://rule34video.com/video/${key}/v/`,
           favoritePage: Number(hit.favoritePage) || 0,
           cardIndex: Number.isInteger(hit.cardIndex) ? hit.cardIndex : 0,
           durationSec: coerceDurationSec(hit.durationSec),
@@ -5901,7 +6263,7 @@
       return {
         videoId: key,
         title: key,
-        detailUrl: `https://rule34video.com/video/${key}/`,
+        detailUrl: `https://rule34video.com/video/${key}/v/`,
         favoritePage: 0,
         cardIndex: 0,
         durationSec: null,
@@ -5914,36 +6276,6 @@
     if (!m) return null;
     const n = Number(m[1]);
     return Number.isInteger(n) && n > 0 ? n : null;
-  }
-
-  /**
-   * Site lists are newest-first: adding/moving ascending seq (1…N) puts N on page 1.
-   * Object.keys(selection) follows videoId order, not ordinals — sort before bulk ops.
-   * Helper /ordinals/lookup accepts at most 500 ids per call — chunk large selections.
-   */
-  async function sortVideoIdsByOrdinalAsc(ids, itemsMap = {}) {
-    const list = [...new Set((ids || []).map(String).filter((id) => /^\d+$/.test(id)))];
-    if (list.length <= 1) return list;
-    const map = {};
-    const CHUNK = 500;
-    for (let i = 0; i < list.length; i += CHUNK) {
-      const chunk = list.slice(i, i + CHUNK);
-      try {
-        const looked = await send('HELPER_ORDINALS_LOOKUP', { videoIds: chunk });
-        Object.assign(map, looked?.ordinals || {});
-      } catch (_) {
-        /* Helper optional; fall back to title prefix */
-      }
-    }
-    const scored = list.map((id, i) => {
-      let seq = map[id] != null ? Number(map[id]) : NaN;
-      if (!Number.isFinite(seq) || seq < 1) {
-        seq = ordinalFromTitle(itemsMap[id]?.title) || Infinity;
-      }
-      return { id, seq, i };
-    });
-    scored.sort((a, b) => a.seq - b.seq || a.i - b.i);
-    return scored.map((x) => x.id);
   }
 
   async function persistIndex(scope, videos) {
@@ -6029,8 +6361,42 @@
   }
 
   /**
+   * Assign favoritePage / cardIndex from newest-first array order.
+   * Favorited Compact sort keys off these fields — must stay dense and unique.
+   */
+  function reassignIndexPageCards(videos, pageSize) {
+    const list = Array.isArray(videos) ? videos : [];
+    const per = Math.max(1, Number(pageSize) || 12);
+    list.forEach((v, i) => {
+      if (!v || typeof v !== 'object') return;
+      v.favoritePage = Math.floor(i / per) + 1;
+      v.cardIndex = i % per;
+    });
+    return list;
+  }
+
+  /** Duplicate or missing page/card slots break Favorited order after patch-adds. */
+  function indexPageCardsLookCorrupt(videos) {
+    const list = Array.isArray(videos) ? videos : [];
+    if (list.length < 2) return false;
+    const seen = new Set();
+    for (let i = 0; i < list.length; i += 1) {
+      const page = Number(list[i]?.favoritePage) || 0;
+      const card = Number.isInteger(list[i]?.cardIndex) ? list[i].cardIndex : -1;
+      if (page < 1 || card < 0) return true;
+      const key = `${page}:${card}`;
+      if (seen.has(key)) return true;
+      seen.add(key);
+    }
+    return false;
+  }
+
+  /**
    * Add items to an existing list index. If no index exists yet, mark dirty
    * instead of writing a tiny partial index that would break Show matches.
+   * Site lists are newest-first: prepend new ids and renumber page/card so
+   * Favorited Compact sort matches collection order (never append with a
+   * shared cardIndex 0 — that left new favorites mid-list after renumber).
    */
   async function patchIndexAddItems(scope, items) {
     const batch = Array.isArray(items) ? items : [];
@@ -6052,22 +6418,23 @@
       invalidateFrozenViewForStoreChange();
       return null;
     }
-    const videos = [...idx.videos];
-    const seen = new Set(videos.map((v) => String(v.videoId)));
-    let added = 0;
+    const prior = Array.isArray(idx.videos) ? idx.videos : [];
+    const seen = new Set(prior.map((v) => String(v.videoId)));
+    // Last in batch = most recently favorited (site puts it at the front).
+    const newRows = [];
     const addedIds = [];
-    batch.forEach((it) => {
+    for (let i = batch.length - 1; i >= 0; i -= 1) {
+      const it = batch[i];
       const id = String(it?.videoId || '').trim();
-      if (!id || seen.has(id)) return;
+      if (!id || seen.has(id)) continue;
       seen.add(id);
-      added += 1;
       addedIds.push(id);
-      videos.push({
+      newRows.push({
         videoId: id,
         title: it.title || id,
-        detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/`,
-        favoritePage: Number(it.favoritePage) || 0,
-        cardIndex: Number.isInteger(it.cardIndex) ? it.cardIndex : 0,
+        detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/v/`,
+        favoritePage: 1,
+        cardIndex: 0,
         durationSec: coerceDurationSec(it.durationSec),
         thumbUrl: normalizeThumbUrl(it.thumbUrl),
         previewUrl: normalizeThumbUrl(it.previewUrl),
@@ -6077,14 +6444,20 @@
         uploadedText: normalizeMetaText(it.uploadedText),
         sexGroup: String(it.sexGroup || '').trim(),
       });
-    });
-    if (!added) {
+    }
+    if (!newRows.length) {
       if (scope === 'favorites') {
-        myFavIdSet = new Set(videos.map((v) => String(v.videoId)));
+        myFavIdSet = new Set(prior.map((v) => String(v.videoId)));
         favoritesIndexDirty = false;
       }
       return idx;
     }
+    // addedIds was filled newest-first; reverse for callers that expect add order.
+    addedIds.reverse();
+    const videos = reassignIndexPageCards(
+      [...newRows, ...prior],
+      cardsPerPageEstimate(),
+    );
     const next = await persistIndex(scope, videos);
     invalidateFrozenViewForStoreChange();
     // Sex baseline exists → auto-fill labels for new ids (page-1 or delta job).
@@ -6152,8 +6525,13 @@
       listIndexDirty = false;
       return;
     }
-    if (listIndexDirty || indexCountDrifted(liveTotal, indexed)) {
+    if (
+      listIndexDirty ||
+      indexCountDrifted(liveTotal, indexed) ||
+      indexPageCardsLookCorrupt(favIndexCache?.videos)
+    ) {
       // Auto Match refresh: page 1 only (do not use toolbar from–to).
+      // Also recover duplicate page/card slots left by older patch-add bugs.
       await buildFavIndex({ force: true, mode: 'incremental', fromPage: 1, toPage: 1 });
       listIndexDirty = false;
     }
@@ -6261,16 +6639,6 @@
     if (health && typeof health.directoryExists === 'boolean') {
       videoRootExists = health.directoryExists;
     }
-  }
-
-  async function refreshVideoRootExists() {
-    try {
-      const health = await send('HELPER_HEALTH');
-      applyVideoRootHealth(health);
-    } catch (_) {
-      videoRootExists = false;
-    }
-    return videoRootExists;
   }
 
   function updateToolbarLabels() {
@@ -6537,40 +6905,70 @@
     const showAllBtn = qs(bar, '[data-act="filter-show-all"]');
     const viewUi = uiViewMode();
     const viewLocked = viewButtonsLocked();
+    // View labels: List · List (match) · Matches · Selected
+    // (internal modes stay all / matches / compact / selected).
+    if (showAllBtn) {
+      showAllBtn.disabled = viewLocked;
+      showAllBtn.classList.toggle('is-active-view', viewUi === 'all');
+      showAllBtn.textContent = 'List';
+      showAllBtn.title = 'Full native site list (no Match filter; site pager)';
+    }
     if (applyBtn) {
       if (viewLocked) {
         applyBtn.disabled = true;
-        if (filterRunning && viewUi === 'matches') applyBtn.textContent = 'Showing…';
+        if (filterRunning && viewUi === 'matches') applyBtn.textContent = 'Filtering…';
       } else {
         applyBtn.disabled = false;
         if (filterState.active && filterState.matchCount != null && !compactViewActive) {
-          applyBtn.textContent = `Show matches (${formatFavCount(filterState.matchCount)})`;
+          applyBtn.textContent = `List (match · ${formatFavCount(filterState.matchCount)})`;
         } else {
-          applyBtn.textContent = 'Show matches';
+          applyBtn.textContent = 'List (match)';
         }
       }
       applyBtn.classList.toggle('is-active-view', viewUi === 'matches');
+      applyBtn.title =
+        'Native site list filtered by current Match rules (grays non-matches; site pager)';
     }
     if (compactBtn) {
       if (viewLocked) {
         compactBtn.disabled = true;
-        if (filterRunning && viewUi === 'compact') compactBtn.textContent = 'Compacting…';
+        if (filterRunning && viewUi === 'compact') compactBtn.textContent = 'Loading…';
       } else {
         compactBtn.disabled = false;
-        if (compactViewActive && filterState.matchCount != null) {
-          compactBtn.textContent = `Compact (${formatFavCount(filterState.matchCount)})`;
+        if (viewUi === 'compact' && compactViewActive && filterState.matchCount != null) {
+          compactBtn.textContent = `Matches (${formatFavCount(filterState.matchCount)})`;
         } else {
-          compactBtn.textContent = 'Compact';
+          compactBtn.textContent = 'Matches';
         }
       }
       compactBtn.classList.toggle('is-active-view', viewUi === 'compact');
       compactBtn.title =
-        'Compact matches: show matching videos as full cards (paged, sortable). With default Match (all chips on) this lists the full index. Uses the list index; Build/Rebuild for membership/meta; Tag sex once for sex baseline (later adds auto-tag; Retag sex is the escape hatch). Match pager replaces the native controls in toolbar Pages.';
+        'Match result set as full cards (paged, sortable). With default Match (all chips on) this lists the full index. Uses the list index; Build/Rebuild for membership/meta; Tag sex once for sex baseline (later adds auto-tag; Retag sex is the escape hatch). Match pager replaces the native controls in toolbar Pages.';
     }
     syncCompactSortControls();
-    if (showAllBtn) {
-      showAllBtn.disabled = viewLocked;
-      showAllBtn.classList.toggle('is-active-view', viewUi === 'all');
+    const viewSelectedBtn = qs(bar, `[data-act="view-selected"]`);
+    if (viewSelectedBtn) {
+      const n = Number(selCountCached) || 0;
+      if (viewLocked) {
+        viewSelectedBtn.disabled = true;
+        if (filterRunning && viewUi === 'selected') {
+          viewSelectedBtn.textContent = 'Loading…';
+        }
+      } else {
+        viewSelectedBtn.disabled = n <= 0 || !!selProgress;
+        if (viewUi === 'selected' && filterState.matchCount != null) {
+          viewSelectedBtn.textContent = `Selected (${formatFavCount(filterState.matchCount)})`;
+        } else if (n > 0) {
+          viewSelectedBtn.textContent = `Selected (${formatFavCount(n)})`;
+        } else {
+          viewSelectedBtn.textContent = 'Selected';
+        }
+      }
+      viewSelectedBtn.classList.toggle('is-active-view', viewUi === 'selected');
+      viewSelectedBtn.title =
+        n > 0
+          ? 'Selection as cards (paged, sortable; ignores Match chips)'
+          : 'Select videos first (This page / Page range / Seq range / All matches)';
     }
     const plBtn = qs(bar, '[data-act="playlist-add"]');
     const plStop = qs(bar, '[data-act="playlist-stop"]');
@@ -6592,6 +6990,9 @@
         plBtn.title = 'Add selected videos to a site playlist (survives refresh; Stop to cancel).';
       }
     }
+    // Reclamp Page / Seq range when List / List (match) / Matches / Selected changes counts.
+    syncPageRangePlaceholders();
+    syncSeqRangeClamp();
   }
 
   function ensureControls() {
@@ -6617,6 +7018,7 @@
       qs(box, '[data-act="filter-straight"]') &&
       qs(box, '[data-act="filter-show-all"]') &&
       qs(box, '[data-act="filter-compact"]') &&
+      qs(box, `.${NS}-view-seg [data-act="view-selected"]`) &&
       qs(box, `.${NS}-view-seg`) &&
       qs(box, `.${NS}-compact-tools`) &&
       (isPlaylistDetailPage()
@@ -6639,6 +7041,9 @@
       !qs(box, '[data-role="index-end"]') &&
       qs(box, '[data-act="select-page"]') &&
       qs(box, '[data-act="select-pages"]') &&
+      qs(box, '[data-act="select-seqs"]') &&
+      qs(box, '[data-role="select-seq-start"]') &&
+      qs(box, '[data-role="select-seq-end"]') &&
       qs(box, '[data-act="select-matches"]') &&
       qs(box, '[data-act="scan"]') &&
       qs(box, '[data-act="wake-queue"]') &&
@@ -6651,6 +7056,12 @@
         'filter-cloud' &&
       qs(box, '[data-act="filter-futa"]')?.nextElementSibling?.getAttribute('data-act') ===
         'filter-straight' &&
+      qs(box, `.${NS}-view-seg [data-act="filter-show-all"]`)?.nextElementSibling?.getAttribute(
+        'data-act',
+      ) === 'filter-apply' &&
+      qs(box, `.${NS}-view-seg [data-act="filter-apply"]`)?.nextElementSibling?.getAttribute(
+        'data-act',
+      ) === 'filter-compact' &&
       qs(box, '[data-act="index-sex"]')?.nextElementSibling?.getAttribute('data-act') ===
         'index-sex-stop' &&
       !!(
@@ -6787,13 +7198,14 @@
         <span class="${NS}-rail-label">View</span>
         <div class="${NS}-pipeline ${NS}-browse-pipeline" aria-label="View mode">
           <div class="${NS}-btn-pair ${NS}-view-seg" role="group" aria-label="View mode">
-            <button type="button" class="${NS}-btn" data-act="filter-apply">Show matches</button>
-            <button type="button" class="${NS}-btn" data-act="filter-show-all">Show all</button>
-            <button type="button" class="${NS}-btn is-active-view" data-act="filter-compact">Compact</button>
+            <button type="button" class="${NS}-btn" data-act="filter-show-all" title="Full native site list (no Match filter; site pager)">List</button>
+            <button type="button" class="${NS}-btn" data-act="filter-apply" title="Native site list filtered by current Match rules (grays non-matches; site pager)">List (match)</button>
+            <button type="button" class="${NS}-btn is-active-view" data-act="filter-compact" title="Match result set as full cards (paged, sortable)">Matches</button>
+            <button type="button" class="${NS}-btn" data-act="view-selected" disabled title="Select videos first (This page / Page range / Seq range / All matches)">Selected</button>
           </div>
-          <div class="${NS}-compact-tools" role="group" aria-label="Compact sort" aria-hidden="true">
+          <div class="${NS}-compact-tools" role="group" aria-label="Matches sort" aria-hidden="true">
             <span class="${NS}-chip-group-label">Sort</span>
-            <div class="${NS}-btn-pair ${NS}-sort-seg" role="group" aria-label="Compact sort field">
+            <div class="${NS}-btn-pair ${NS}-sort-seg" role="group" aria-label="Matches sort field">
               ${favoritedSortBtn}${seqSortBtn}
               <button type="button" class="${NS}-btn" data-act="compact-sort-field" data-sort-field="uploaded" data-sort-label="Uploaded" aria-pressed="false" disabled>Uploaded</button>
               <button type="button" class="${NS}-btn" data-act="compact-sort-field" data-sort-field="duration" data-sort-label="Duration" aria-pressed="false" disabled>Duration</button>
@@ -6817,6 +7229,16 @@
             </span>
             <button type="button" class="${NS}-btn" data-act="select-pages">Page range</button>
           </div>
+          <div class="${NS}-inline-range">
+            <span class="${NS}-paren-field">
+              <span class="${NS}-paren">(</span>
+              <input data-role="select-seq-start" type="number" min="1" placeholder="from" aria-label="Seq start" />
+              <span class="${NS}-paren-sep">–</span>
+              <input data-role="select-seq-end" type="number" min="1" placeholder="to" aria-label="Seq end" />
+              <span class="${NS}-paren">)</span>
+            </span>
+            <button type="button" class="${NS}-btn" data-act="select-seqs" title="Select by title seq prefix (N——…). One side only = that single seq.">Seq range</button>
+          </div>
           <button type="button" class="${NS}-btn ${NS}-btn--accent" data-act="select-matches">All matches</button>
           <button type="button" class="${NS}-btn ${NS}-btn--ghost" data-act="clear">Clear · 0</button>
         </div>
@@ -6833,14 +7255,20 @@
     const endIn = qs(box, '[data-role="select-end"]');
     if (startIn) startIn.value = selectStartSaved || '';
     if (endIn) endIn.value = selectEndSaved || '';
+    const seqStartIn = qs(box, '[data-role="select-seq-start"]');
+    const seqEndIn = qs(box, '[data-role="select-seq-end"]');
+    if (seqStartIn) seqStartIn.value = selectSeqStartSaved || '';
+    if (seqEndIn) seqEndIn.value = selectSeqEndSaved || '';
     placeControls(box);
     syncToolbarMiddleCollapsed(box);
     syncCompactSortControls();
     updateToolbarLabels();
     wirePageRangeInputs(box);
+    wireSeqRangeInputs(box);
     wireDurationFilterInputs(box);
     wireTitleQueryFilterInput(box);
     syncPageRangePlaceholders();
+    syncSeqRangeClamp();
     return box;
   }
 
@@ -6852,10 +7280,6 @@
 
   function ensureFilterBar() {
     return ensureControls();
-  }
-
-  function placeFilterBar(bar) {
-    placeControls(bar);
   }
 
   /** Sex enrich UI: detail-tag progress (futanari → Futa, else Straight). */
@@ -7002,6 +7426,11 @@
         refreshScanLabelCounts();
         updateFavCountBar();
         setLiveStatus(formatIndexReadyStatus(st, count, maxPage));
+        // Rebuild/Build (and page merges): repaint Compact / Show matches /
+        // Show-all marks from the fresh index. Sex jobs only change labels.
+        if (!indexJobIsSex(st)) {
+          await refreshActiveCardArea({ quiet: true, ensureIndex: false });
+        }
       } else if (st.scope === 'favorites') {
         const favIdx = await send('FAV_INDEX_GET', { scope: 'favorites' });
         myFavIdSet = new Set((favIdx?.videos || []).map((v) => String(v.videoId)));
@@ -7016,6 +7445,9 @@
           refreshScanLabelCounts();
           updateFavCountBar();
           setLiveStatus(formatIndexReadyStatus(st, count, maxPage));
+          if (!indexJobIsSex(st)) {
+            await refreshActiveCardArea({ quiet: true, ensureIndex: false });
+          }
         }
       }
     } else if (st.status === 'error') {
@@ -7130,6 +7562,15 @@
     });
   }
 
+  /**
+   * Max page for Select · Page range inputs — follows the active View's pager
+   * (Compact / Selected → compact pages; Matches / All → native list pages).
+   */
+  function selectRangeMaxPage() {
+    if (compactViewActive) return Math.max(1, compactPageCount());
+    return maxPageNumber();
+  }
+
   /** Clamp a page number into 1..maxPage (upper bound skipped when maxPage < 1). */
   function clampPageNum(n, maxPage = maxPageNumber()) {
     const v = Number(n);
@@ -7143,7 +7584,7 @@
 
   /** Keep from/to number inputs inside 1..maxPage; set min/max attributes. */
   function clampPageRangeInputs(startIn, endIn) {
-    const maxPage = maxPageNumber();
+    const maxPage = selectRangeMaxPage();
     for (const el of [startIn, endIn]) {
       if (!el) continue;
       el.min = '1';
@@ -7152,6 +7593,57 @@
       const raw = String(el.value || '').trim();
       if (raw === '') continue;
       const clamped = clampPageNum(raw, maxPage);
+      if (clamped != null && String(clamped) !== raw) el.value = String(clamped);
+    }
+  }
+
+  /**
+   * Max Favorites / playlist seq for Select · Seq range (1…N after Renumber).
+   * Prefer list total; also honor the highest known index ordinal.
+   */
+  function selectRangeMaxSeq() {
+    const total =
+      optionalNonNegInt(detectFavoritesTotal()) ??
+      optionalNonNegInt(scanFavTotal) ??
+      optionalNonNegInt(knownLibraryTotal) ??
+      optionalNonNegInt(favIndexCache?.videos?.length) ??
+      0;
+    let maxOrd = 0;
+    const indexed = Array.isArray(favIndexCache?.videos) ? favIndexCache.videos : [];
+    for (const v of indexed) {
+      const fromOrd = Number(v?.ordinal);
+      const seq =
+        Number.isFinite(fromOrd) && fromOrd > 0
+          ? Math.trunc(fromOrd)
+          : ordinalFromTitle(v?.title) || 0;
+      if (seq > maxOrd) maxOrd = seq;
+    }
+    const n = Math.max(Number(total) || 0, maxOrd);
+    return n >= 1 ? n : 0;
+  }
+
+  /** Clamp a seq into 1..maxSeq (upper bound skipped when maxSeq < 1). */
+  function clampSeqNum(n, maxSeq = selectRangeMaxSeq()) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return null;
+    let s = Math.trunc(v);
+    if (s < 1) s = 1;
+    const max = Number(maxSeq);
+    if (Number.isInteger(max) && max >= 1 && s > max) s = max;
+    return s;
+  }
+
+  /** Keep seq from/to inputs inside 1..maxSeq; set min/max attributes. */
+  function clampSeqRangeInputs(startIn, endIn) {
+    const maxSeq = selectRangeMaxSeq();
+    for (const el of [startIn, endIn]) {
+      if (!el) continue;
+      el.min = '1';
+      if (maxSeq >= 1) el.max = String(maxSeq);
+      else el.removeAttribute('max');
+      const raw = String(el.value || '').trim();
+      if (raw === '') continue;
+      const clamped = clampSeqNum(raw, maxSeq);
       if (clamped != null && String(clamped) !== raw) el.value = String(clamped);
     }
   }
@@ -7619,7 +8111,7 @@
   /**
    * Build/refresh the Favorites index via background job (works on playlist pages).
    * Does not replace favIndexCache when the current page is a playlist.
-   * Progress: status + Index button only — never Compact / Show matches.
+   * Progress stays on status + Index; adoptIndexJobResult repaints the card area.
    */
   async function buildFavoritesIndexRemote() {
     if (favoritesRemoteIndexRunning) {
@@ -7875,7 +8367,7 @@
       return {
         videoId: key,
         title: key,
-        detailUrl: `https://rule34video.com/video/${key}/`,
+        detailUrl: `https://rule34video.com/video/${key}/v/`,
         favoritePage: 0,
         cardIndex: 0,
         durationSec: null,
@@ -7937,17 +8429,7 @@
       if (movedIds.length) {
         await patchIndexRemoveIds('favorites', movedIds);
         if (!isPlaylistDetailPage() && sourceScope === 'favorites') {
-          ignoreMutationsUntil = Date.now() + 1200;
-          const gone = new Set(movedIds.map(String));
-          parseCards().forEach((card) => {
-            if (gone.has(String(card.videoId))) {
-              try {
-                card.el.remove();
-              } catch (_) {
-                /* ignore */
-              }
-            }
-          });
+          removeListCardsByIds(movedIds);
         }
       }
       if (st.status === 'stopped') {
@@ -8096,6 +8578,9 @@
     const okIds = Array.isArray(result.okIds) ? result.okIds : [];
     if (okIds.length) {
       await patchIndexAddItems('favorites', selectionItemsFromJob(result, okIds));
+      // okIds are add-order (oldest first); claim wants newest-first.
+      await claimNewestOrdinals([...okIds].reverse());
+      if (isFavoritesPage()) scheduleOrdinalRepaint([0, 300]);
     }
     const okCount = Math.max(okIds.length, Number(result.ok) || 0);
     if (st.status === 'stopped') {
@@ -8345,6 +8830,19 @@
     );
   }
 
+  function thumbVideoIdFromEl(el) {
+    if (!(el instanceof Element)) return '';
+    const checkbox =
+      qs(el, 'input.checkbox[name="delete[]"]') ||
+      qs(el, 'input[name="delete[]"]') ||
+      qs(el, 'input[type="checkbox"]');
+    const link = qs(el, 'a.th.js-open-popup, a.th, a[href*="/video/"]');
+    const vid =
+      checkbox?.value ||
+      (link?.getAttribute('href') || '').match(/\/video\/(\d+)\//)?.[1];
+    return String(vid || '').trim();
+  }
+
   function findNativeCardEl(videoId) {
     const id = String(videoId);
     const list = favoritesListEl() || document;
@@ -8352,17 +8850,40 @@
       qsa(list, '.item.thumb').find((el) => {
         if (el.dataset?.hxyruleCompact === '1') return false;
         if (el.closest(`.${NS}-compact-thumbs`)) return false;
-        const checkbox =
-          qs(el, 'input.checkbox[name="delete[]"]') ||
-          qs(el, 'input[name="delete[]"]') ||
-          qs(el, 'input[type="checkbox"]');
-        const link = qs(el, 'a.th.js-open-popup, a.th, a[href*="/video/"]');
-        const vid =
-          checkbox?.value ||
-          (link?.getAttribute('href') || '').match(/\/video\/(\d+)\//)?.[1];
-        return String(vid || '') === id;
+        return thumbVideoIdFromEl(el) === id;
       }) || null
     );
+  }
+
+  /**
+   * Drop native + compact cards for ids just removed from this list.
+   * Compact sits beside a hidden native grid; parseCards() only sees compact
+   * clones, so List would keep deleted videos until a full refresh.
+   */
+  function removeListCardsByIds(ids) {
+    const want = new Set((ids || []).map(String).filter(Boolean));
+    if (!want.size) return 0;
+    ignoreMutationsUntil = Math.max(ignoreMutationsUntil || 0, Date.now() + 1200);
+    const roots = [favoritesListEl(), qs(document, `.${NS}-compact-thumbs`)].filter(
+      Boolean,
+    );
+    const seen = new Set();
+    let n = 0;
+    roots.forEach((root) => {
+      qsa(root, '.item.thumb').forEach((el) => {
+        if (seen.has(el)) return;
+        seen.add(el);
+        const id = thumbVideoIdFromEl(el);
+        if (!id || !want.has(id)) return;
+        try {
+          el.remove();
+          n += 1;
+        } catch (_) {
+          /* ignore */
+        }
+      });
+    });
+    return n;
   }
 
   function stripHxyruleCardChrome(el) {
@@ -8732,9 +9253,10 @@
   ) {
     const id = String(video.videoId);
     const title = String(video.title || id).trim() || id;
-    const detailUrl =
-      video.detailUrl || `https://rule34video.com/video/${id}/`;
-    const popupUrl = `https://rule34video.com/popup-video/${id}/?popup_id=1`;
+    // Never trust index/sample detailUrl when it points at another video — that
+    // left-click (videoId) worked while right-click Open link opened the donor.
+    const detailUrl = detailUrlForVideoId(id, video.detailUrl);
+    const popupUrl = popupUrlForVideoId(id);
     const checkbox =
       qs(el, 'input.checkbox[name="delete[]"]') ||
       qs(el, 'input[name="delete[]"]') ||
@@ -8745,10 +9267,17 @@
     // Without rewriting those, online play always opens the sample (often fav #1).
     const oldId =
       (el.className.match(/\bvideo_(\d+)\b/) || [])[1] ||
-      (qs(el, 'a[href*="/video/"]')?.getAttribute('href') || '').match(
-        /\/video\/(\d+)\//,
-      )?.[1] ||
-      '';
+      (() => {
+        const href =
+          qs(el, 'a.th.js-open-popup, a.th')?.getAttribute('href') ||
+          qs(el, 'a[href*="/video/"]')?.getAttribute('href') ||
+          '';
+        return (
+          href.match(/\/popup-video\/(\d+)\//i)?.[1] ||
+          href.match(/(?:^|https?:\/\/[^/]+)\/video\/(\d+)\//i)?.[1] ||
+          ''
+        );
+      })();
     // Prefer indexed preview; fall back to same-card native preview only.
     const indexedPreview = normalizeThumbUrl(video?.previewUrl);
     const keepPreview =
@@ -8765,12 +9294,16 @@
       let next = raw;
       if (oldId && oldId !== id) {
         next = next
-          .replaceAll(`/video/${oldId}/`, `/video/${id}/`)
-          .replaceAll(`/popup-video/${oldId}/`, `/popup-video/${id}/`);
+          .replaceAll(`/popup-video/${oldId}/`, `/popup-video/${id}/`)
+          .replaceAll(`/video/${oldId}/`, `/video/${id}/`);
       }
-      if (/\/popup-video\/\d+\//.test(next) && !next.includes(`/popup-video/${id}/`)) {
+      if (/\/popup-video\/\d+\//i.test(next) && !next.includes(`/popup-video/${id}/`)) {
         next = popupUrl;
-      } else if (/\/video\/\d+\//.test(next) && !next.includes(`/video/${id}/`)) {
+      } else if (
+        /(?:^|https?:\/\/[^/]+)\/video\/\d+\//i.test(next) &&
+        !/\/popup-video\//i.test(next) &&
+        !next.includes(`/video/${id}/`)
+      ) {
         next = detailUrl;
       }
       if (next !== raw) node.setAttribute(attr, next);
@@ -8788,11 +9321,21 @@
     });
 
     const link =
-      qs(el, 'a.th.js-open-popup, a.th') || qs(el, 'a[href*="/video/"]');
+      qs(el, 'a.th.js-open-popup, a.th') ||
+      qs(el, 'a[href*="/video/"]');
     if (!link) return;
+    // Property + attribute so contextmenu linkUrl and Open-in-new-tab agree.
+    link.setAttribute('href', detailUrl);
     link.href = detailUrl;
     link.title = title;
     link.setAttribute('title', title);
+    // Final sweep: any leftover donor href on this card (nested anchors, etc.).
+    qsa(el, 'a[href]').forEach((node) => {
+      const href = node.getAttribute('href') || '';
+      if (!hrefVideoIdMismatch(href, id)) return;
+      if (/\/popup-video\//i.test(href)) node.setAttribute('href', popupUrl);
+      else node.setAttribute('href', detailUrl);
+    });
     // Donor sample (fav #1) CDN previews cannot be rewritten by video id — drop them.
     if (!keepHoverPreview || indexedPreview) stripStaleCompactHoverMedia(el, id);
     replaceCompactCardImg(link, { thumbUrl, title });
@@ -8819,8 +9362,7 @@
   function buildCompactCardEl(video, thumbUrl, sample, metrics) {
     const id = String(video.videoId);
     const title = String(video.title || id).trim() || id;
-    const detailUrl =
-      video.detailUrl || `https://rule34video.com/video/${id}/`;
+    const detailUrl = detailUrlForVideoId(id, video.detailUrl);
     const favPage = Number(video.favoritePage) || 0;
     const cardIndex = Number.isInteger(video.cardIndex) ? video.cardIndex : 0;
     const exact = findNativeCardEl(id);
@@ -8851,6 +9393,7 @@
       checkbox.value = id;
       const link = document.createElement('a');
       link.className = 'th';
+      link.setAttribute('href', detailUrl);
       link.href = detailUrl;
       link.title = title;
       replaceCompactCardImg(link, { thumbUrl, title });
@@ -9009,7 +9552,7 @@
     const card = {
       el,
       videoId: String(videoId),
-      detailUrl: link.href || `https://rule34video.com/video/${videoId}/`,
+      detailUrl: detailUrlForVideoId(videoId, link.getAttribute('href') || link.href),
       title: String(
         qs(el, '.thumb_title')?.textContent || link.getAttribute('title') || videoId,
       ).trim(),
@@ -9019,6 +9562,12 @@
       checkbox,
       link,
     };
+    // Keep Open-link / contextmenu href aligned with the card id (sample clones).
+    const safeHref = card.detailUrl;
+    if (safeHref && (link.getAttribute('href') || '') !== safeHref) {
+      link.setAttribute('href', safeHref);
+      link.href = safeHref;
+    }
     ensurePickRail(card);
     if (indexed) {
       // After pick rail exists so meta lands in the visible rail, not under a.th.
@@ -9289,7 +9838,9 @@
       // Keep that hide across enterCompactView → exitCompactView → render.
       const keepPendingHide =
         viewRestorePending ||
-        (filterRunning && normalizeViewMode(viewMode) === 'compact');
+        (filterRunning &&
+          (normalizeViewMode(viewMode) === 'compact' ||
+            normalizeViewMode(viewMode) === 'selected'));
       if (keepPendingHide) {
         hideNativeListForPendingCompact();
       } else {
@@ -9302,6 +9853,7 @@
             /* ignore */
           }
         }
+        kickNativeThumbLazyloadAfterReveal();
       }
       syncCompactSortControls();
       return;
@@ -9331,6 +9883,8 @@
     }
     pageFinger = pageFingerprint();
     syncCompactSortControls();
+    // Native grid was hidden during Compact; refill may have left grey.gif.
+    kickNativeThumbLazyloadAfterReveal();
   }
   function enrichMatchMetaFromLiveDom(items) {
     const list = Array.isArray(items) ? items : [];
@@ -9373,6 +9927,42 @@
           coerceDurationSec(live.durationSec) ?? coerceDurationSec(v.durationSec),
       };
     });
+  }
+
+  /**
+   * Write live/DOM durations into the list index when rows still lack durationSec.
+   * Duration Match used to drop unknown lengths, so heart-added rows with null
+   * clocks never matched until a full Rebuild.
+   */
+  async function persistDurationBackfills(items) {
+    const scope = indexScopeKey();
+    const indexed = favIndexCache?.videos;
+    if (!Array.isArray(indexed) || !indexed.length) return 0;
+    const fill = new Map();
+    (Array.isArray(items) ? items : []).forEach((v) => {
+      const id = String(v?.videoId || '').trim();
+      const d = coerceDurationSec(v?.durationSec);
+      if (!id || d == null || d <= 0) return;
+      fill.set(id, d);
+    });
+    if (!fill.size) return 0;
+    let changed = 0;
+    const videos = indexed.map((v) => {
+      const id = String(v?.videoId || '').trim();
+      const next = fill.get(id);
+      if (next == null) return v;
+      const prev = coerceDurationSec(v?.durationSec);
+      if (prev != null && prev > 0) return v;
+      changed += 1;
+      return { ...v, durationSec: next };
+    });
+    if (!changed) return 0;
+    try {
+      await persistIndex(scope, videos);
+    } catch (_) {
+      return 0;
+    }
+    return changed;
   }
 
   async function enterCompactView(matched) {
@@ -9426,7 +10016,7 @@
     viewMode = 'compact';
     setError('');
     updateFilterBarLabels();
-    // Keep Compact label stable (Compacting… via updateFilterBarLabels). Scan /
+    // Keep Matches label stable (Loading… via updateFilterBarLabels). Scan /
     // index refresh progress goes to status + Index / Tag sex — not this button.
     try {
       // Default Match (all chips on, no Duration/Name) still lists the full index — like All matches.
@@ -9483,7 +10073,7 @@
         viewDeps = null;
         viewMode = 'compact';
       }
-      setError(`Compact failed: ${err.message || String(err)}`);
+      setError(`Matches view failed: ${err.message || String(err)}`);
       throw err;
     } finally {
       filterRunning = false;
@@ -9517,7 +10107,7 @@
         }
         if (!(myFavIdSet && myFavIdSet.size)) {
           throw new Error(
-            'Favorited/Unfavorited needs a Favorites index — Build on My Favorites, or retry Show matches.',
+            'Favorited/Unfavorited needs a Favorites index — Build on My Favorites, or retry List (match) / Matches.',
           );
         }
       } else {
@@ -9645,6 +10235,33 @@
     if (wantsTitle) {
       videos = await ensureCompactItemOrdinals(videos);
     }
+    // Duration Match excludes null clocks. Fill from the visible list before
+    // filtering, then persist so later pages / next Match keep the values.
+    if (wantsDur) {
+      videos = enrichMatchMetaFromLiveDom(videos);
+      await persistDurationBackfills(videos);
+      const pageCap = Math.max(cardsPerPageEstimate(), nativeListCardCount(), 1);
+      const newestMissing = videos
+        .slice(0, pageCap)
+        .filter((v) => coerceDurationSec(v.durationSec) == null).length;
+      // Newest page still unknown after live fill → crawl page 1 for .time.
+      if (newestMissing > 0 && !bootInProgress && ensureIndex) {
+        try {
+          setLiveStatus('Filling durations…');
+          await buildFavIndex({
+            force: true,
+            mode: 'incremental',
+            fromPage: 1,
+            toPage: 1,
+          });
+          await loadFavIndexCache();
+          videos = enrichMatchMetaFromLiveDom(favIndexCache?.videos || []);
+          await persistDurationBackfills(videos);
+        } catch (_) {
+          /* keep whatever clocks we already have */
+        }
+      }
+    }
     const bounds = { ...readDurationFilterInputs(), titleQuery: readTitleQueryFilter() };
     const matched = [];
     videos.forEach((v) => {
@@ -9684,8 +10301,8 @@
     } catch (_) {
       /* ignore */
     }
-    // Showing… comes from updateFilterBarLabels while filterRunning — do not
-    // overwrite with Scanning / Refreshing index on Compact / Show matches.
+    // Filtering… / Loading… come from updateFilterBarLabels while filterRunning —
+    // do not overwrite with Scanning / Refreshing index on List (match) / Matches.
     try {
       const { matched, emptyRules } = await collectMatchItems({
         ensureIndex,
@@ -9717,6 +10334,131 @@
     }
   }
 
+  /**
+   * Build Compact-ready rows from the persisted selection bag.
+   * Prefer list-index meta (thumbs / duration / sex); fall back to bag fields
+   * from This page / Page range.
+   */
+  async function collectSelectedViewItems() {
+    const sel = await send('SELECTION_GET');
+    const itemsMap = sel?.items && typeof sel.items === 'object' ? sel.items : {};
+    const ids = Object.keys(itemsMap);
+    if (!ids.length) return [];
+    await loadFavIndexCache();
+    const byId = new Map(
+      (favIndexCache?.videos || []).map((v) => [String(v.videoId), v]),
+    );
+    return ids.map((id) => {
+      const key = String(id);
+      const bag = itemsMap[key] || {};
+      const hit = byId.get(key);
+      if (hit) {
+        return {
+          ...hit,
+          title: hit.title || bag.title || key,
+          detailUrl:
+            hit.detailUrl ||
+            bag.detailUrl ||
+            `https://rule34video.com/video/${key}/v/`,
+          favoritePage:
+            Number(hit.favoritePage) || Number(bag.favoritePage) || 0,
+          cardIndex: Number.isInteger(hit.cardIndex)
+            ? hit.cardIndex
+            : Number.isInteger(bag.cardIndex)
+              ? bag.cardIndex
+              : 0,
+          durationSec:
+            coerceDurationSec(hit.durationSec) ??
+            coerceDurationSec(bag.durationSec),
+          thumbUrl:
+            normalizeThumbUrl(hit.thumbUrl) ||
+            normalizeThumbUrl(bag.thumbUrl) ||
+            '',
+          previewUrl:
+            normalizeThumbUrl(hit.previewUrl) ||
+            normalizeThumbUrl(bag.previewUrl) ||
+            '',
+        };
+      }
+      return {
+        videoId: key,
+        title: bag.title || key,
+        detailUrl: bag.detailUrl || `https://rule34video.com/video/${key}/v/`,
+        favoritePage: Number(bag.favoritePage) || 0,
+        cardIndex: Number.isInteger(bag.cardIndex) ? bag.cardIndex : 0,
+        durationSec: coerceDurationSec(bag.durationSec),
+        thumbUrl: normalizeThumbUrl(bag.thumbUrl),
+        previewUrl: normalizeThumbUrl(bag.previewUrl),
+        viewsText: normalizeMetaText(bag.viewsText),
+        ratingText: normalizeMetaText(bag.ratingText),
+        addedText: normalizeMetaText(bag.addedText),
+        uploadedText: normalizeMetaText(bag.uploadedText),
+        sexGroup: String(bag.sexGroup || '').trim(),
+      };
+    });
+  }
+
+  /** Compact View of the current selection (does not change the selection bag). */
+  async function applySelectedCompactView({ quiet = false } = {}) {
+    if (filterRunning) {
+      for (let i = 0; i < 600 && filterRunning; i += 1) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (filterRunning) return;
+    }
+    filterRunning = true;
+    viewMode = 'selected';
+    setError('');
+    updateFilterBarLabels();
+    updateToolbarLabels();
+    try {
+      const matched = await collectSelectedViewItems();
+      if (!matched.length) {
+        setError(
+          'No videos selected. Click the info panel under a thumb, or use This page / Page range / All matches.',
+        );
+        return;
+      }
+      await enterCompactView(matched);
+      filterState.matchedIds = new Set(matched.map((v) => String(v.videoId)));
+      filterState.matchCount = matched.length;
+      filterState.active = true;
+      // Selection View does not depend on Match chips / disk filters.
+      viewDeps = { disk: false, list: false, fav: false, playlist: false };
+      viewMode = 'selected';
+      wireCardClicks();
+      if (!(bootInProgress && !scanned)) {
+        await refreshLookup();
+      }
+      await restoreSelectionToPage(parseCards());
+      applyFilterToCurrentPage();
+      updateFilterBarLabels();
+      updateToolbarLabels();
+      await saveFilterState();
+      const pages = compactPageCount();
+      if (!quiet) {
+        setFlash(
+          pages > 1
+            ? `Selected · ${formatFavCount(matched.length)} · ${pages} pages`
+            : `Selected · ${formatFavCount(matched.length)}`,
+        );
+      }
+    } catch (err) {
+      if (!compactViewActive) {
+        filterState.active = false;
+        filterState.matchedIds = null;
+        filterState.matchCount = null;
+        viewDeps = null;
+        viewMode = 'compact';
+      }
+      setError(`Selected view failed: ${err.message || String(err)}`);
+    } finally {
+      filterRunning = false;
+      updateFilterBarLabels();
+      updateToolbarLabels();
+    }
+  }
+
   /** Select every video matching the frozen View, or current Match rules if View is off. */
   async function selectAllMatches() {
     setError('');
@@ -9739,7 +10481,7 @@
           return {
             videoId: String(id),
             title: String(id),
-            detailUrl: `https://rule34video.com/video/${id}/`,
+            detailUrl: `https://rule34video.com/video/${id}/v/`,
           };
         });
       } else {
@@ -9753,7 +10495,7 @@
       if (!matched.length) {
         setError(
           filterState.active
-            ? 'View has 0 matches — adjust Match rules and Show matches'
+            ? 'View has 0 matches — adjust Match rules and try List (match) / Matches'
             : 'No videos match current rules',
         );
         return;
@@ -9820,6 +10562,8 @@
     } catch (_) {
       scheduleOrdinalRepaint();
     }
+    // Matches→List after unfavorite: hidden-grid reload left unloaded thumbs.
+    kickNativeThumbLazyloadAfterReveal();
     await saveFilterState();
     setError('');
   }
@@ -9851,6 +10595,12 @@
     }
     matchViewReapplyGen += 1;
     if (!reapplyView) {
+      updateFilterBarLabels();
+      if (persist) await saveFilterState();
+      return;
+    }
+    if (keepMode === 'selected') {
+      viewMode = 'selected';
       updateFilterBarLabels();
       if (persist) await saveFilterState();
       return;
@@ -9887,10 +10637,16 @@
     const bar = qs(document, `.${NS}-controls`);
     selectStartSaved = '';
     selectEndSaved = '';
+    selectSeqStartSaved = '';
+    selectSeqEndSaved = '';
     const startIn = bar && qs(bar, '[data-role="select-start"]');
     const endIn = bar && qs(bar, '[data-role="select-end"]');
     if (startIn) startIn.value = '';
     if (endIn) endIn.value = '';
+    const seqStartIn = bar && qs(bar, '[data-role="select-seq-start"]');
+    const seqEndIn = bar && qs(bar, '[data-role="select-seq-end"]');
+    if (seqStartIn) seqStartIn.value = '';
+    if (seqEndIn) seqEndIn.value = '';
     syncPageRangePlaceholders();
     selCollectCancel = true;
     selProgress = null;
@@ -9921,7 +10677,7 @@
     // Empty side uses gray placeholder suggestion (a+10 / b-10).
     const startN = startRaw !== '' ? Number(startRaw) : Number(startIn?.placeholder);
     const endN = endRaw !== '' ? Number(endRaw) : Number(endIn?.placeholder);
-    const maxPage = maxPageNumber();
+    const maxPage = selectRangeMaxPage();
     if (!Number.isFinite(startN) || !Number.isFinite(endN)) {
       setError('Enter a valid page range (from–to)');
       return;
@@ -9941,6 +10697,133 @@
     await collectPages(start, end);
   }
 
+  /**
+   * Select videos whose title seq (N——…) / Helper ordinal is in [from, to].
+   * One side empty → that end equals the other (single-seq select).
+   */
+  async function selectSeqRangeFromInputs() {
+    const bar = qs(document, `.${NS}-controls`) || document;
+    const startIn = qs(bar, '[data-role="select-seq-start"]');
+    const endIn = qs(bar, '[data-role="select-seq-end"]');
+    const startRaw = String(startIn?.value || '').trim();
+    const endRaw = String(endIn?.value || '').trim();
+    if (startRaw === '' && endRaw === '') {
+      setError('Enter a seq range (from–to); one side alone selects that seq');
+      return;
+    }
+    const startN = startRaw !== '' ? Number(startRaw) : Number(endRaw);
+    const endN = endRaw !== '' ? Number(endRaw) : Number(startRaw);
+    if (!Number.isFinite(startN) || !Number.isFinite(endN)) {
+      setError('Enter a valid seq range (from–to)');
+      return;
+    }
+    const maxSeq = selectRangeMaxSeq();
+    let start = clampSeqNum(startN, maxSeq);
+    let end = clampSeqNum(endN, maxSeq);
+    if (start == null || end == null) {
+      setError('Enter a valid seq range (from–to)');
+      return;
+    }
+    if (start > end) {
+      const tmp = start;
+      start = end;
+      end = tmp;
+    }
+    // Mirror filled side / clamped values so the UI matches the action.
+    if (startIn) startIn.value = String(start);
+    if (endIn) endIn.value = String(end);
+    selectSeqStartSaved = String(start);
+    selectSeqEndSaved = String(end);
+    saveFilterState().catch(() => {});
+
+    setError('');
+    try {
+      // Prefer library index + ordinals; fill holes via Helper by-seq.
+      await loadFavIndexCache();
+      let videos = Array.isArray(favIndexCache?.videos) ? [...favIndexCache.videos] : [];
+      if (!videos.length) {
+        try {
+          const result = await collectMatchItems({
+            ensureIndex: true,
+            allowUnfiltered: true,
+          });
+          videos = Array.isArray(result?.matched) ? [...result.matched] : [];
+        } catch (err) {
+          throw new Error(
+            err?.message ||
+              'Seq range needs an index — Build / Compact first, or run Renumber',
+          );
+        }
+      }
+      await ensureCompactItemOrdinals(videos);
+      const bySeq = new Map();
+      videos.forEach((v) => {
+        const seq = seqOrderKey(v);
+        if (seq == null || seq < start || seq > end) return;
+        bySeq.set(seq, v);
+      });
+      // Fill missing seqs from Helper when the span is modest (titles may lack N——).
+      const span = end - start + 1;
+      if (bySeq.size < span && span <= 300) {
+        for (let seq = start; seq <= end; seq += 1) {
+          if (bySeq.has(seq)) continue;
+          try {
+            const info = await send('HELPER_ORDINALS_BY_SEQ', { seq });
+            if (!info?.found || !info.videoId) continue;
+            const videoId = String(info.videoId);
+            const hit = videos.find((v) => String(v.videoId) === videoId);
+            bySeq.set(
+              seq,
+              hit || {
+                videoId,
+                title: titledWithOrdinal(seq, videoId),
+                detailUrl: `https://rule34video.com/video/${videoId}/v/`,
+              },
+            );
+          } catch (_) {
+            /* Helper optional */
+          }
+        }
+      }
+      if (!bySeq.size) {
+        setError(
+          start === end
+            ? `Seq ${start} not found — run Renumber or Build index first`
+            : `No videos with seq ${start}–${end} — run Renumber or Build index first`,
+        );
+        return;
+      }
+      const items = {};
+      [...bySeq.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .forEach(([, v]) => {
+          const id = String(v.videoId);
+          items[id] = {
+            videoId: id,
+            title: v.title,
+            detailUrl: v.detailUrl || `https://rule34video.com/video/${id}/v/`,
+            favoritePage: v.favoritePage,
+            cardIndex: v.cardIndex,
+          };
+        });
+      await send('SELECTION_SET', { selection: selectionRecord(items) });
+      await refreshSelectionCount(items);
+      ignoreMutationsUntil = Date.now() + 400;
+      parseCards().forEach((card) => {
+        setCardChecked(card, !!items[String(card.videoId)]);
+      });
+      const n = Object.keys(items).length;
+      const label = start === end ? `seq ${start}` : `seq ${start}–${end}`;
+      setFlash(
+        n === end - start + 1
+          ? `Selected ${formatFavCount(n)} · ${label}`
+          : `Selected ${formatFavCount(n)} of ${end - start + 1} · ${label}`,
+      );
+    } catch (err) {
+      setError(`Seq range failed: ${err.message || String(err)}`);
+    }
+  }
+
   const PAGE_RANGE_SPAN = 10;
 
   /** Keep empty from/to placeholders as gray a+10 / b-10 suggestions (clamped 1..max). */
@@ -9950,7 +10833,7 @@
     const endIn = qs(bar, '[data-role="select-end"]');
     if (!startIn || !endIn) return;
     clampPageRangeInputs(startIn, endIn);
-    const maxPage = maxPageNumber();
+    const maxPage = selectRangeMaxPage();
     const startRaw = String(startIn.value || '').trim();
     const endRaw = String(endIn.value || '').trim();
     const startN = Number(startRaw);
@@ -9999,6 +10882,36 @@
     startIn.addEventListener('change', onInput);
     endIn.addEventListener('change', onInput);
     syncPageRangePlaceholders();
+  }
+
+  function wireSeqRangeInputs(bar) {
+    const startIn = qs(bar, '[data-role="select-seq-start"]');
+    const endIn = qs(bar, '[data-role="select-seq-end"]');
+    if (!startIn || !endIn || startIn.dataset.seqRangeWired === '1') return;
+    startIn.dataset.seqRangeWired = '1';
+    endIn.dataset.seqRangeWired = '1';
+    const onInput = () => {
+      clampSeqRangeInputs(startIn, endIn);
+      selectSeqStartSaved = String(startIn.value || '').trim();
+      selectSeqEndSaved = String(endIn.value || '').trim();
+      saveFilterState().catch(() => {});
+    };
+    startIn.addEventListener('input', onInput);
+    endIn.addEventListener('input', onInput);
+    startIn.addEventListener('change', onInput);
+    endIn.addEventListener('change', onInput);
+    syncSeqRangeClamp();
+  }
+
+  /** Reclamp Seq range from/to when library total / max ordinal becomes known. */
+  function syncSeqRangeClamp() {
+    const bar = qs(document, `.${NS}-controls`) || document;
+    const startIn = qs(bar, '[data-role="select-seq-start"]');
+    const endIn = qs(bar, '[data-role="select-seq-end"]');
+    if (!startIn || !endIn) return;
+    clampSeqRangeInputs(startIn, endIn);
+    selectSeqStartSaved = String(startIn.value || '').trim();
+    selectSeqEndSaved = String(endIn.value || '').trim();
   }
 
   function wireDurationFilterInputs(bar) {
@@ -10221,10 +11134,6 @@
   }
 
   /** Keep brand chip in sync with Libraries "From:" (prefetch site playlist counts). */
-  function refreshLibraryFromChip() {
-    ensureLibraryCountPrefetch({ force: false });
-  }
-
   /**
    * Brand chip must not wait solely on the playlist-list network call: Favorites
    * counts come from the site headline, which may appear slightly after first paint.
@@ -10317,16 +11226,6 @@
     } catch (err) {
       return false;
     }
-  }
-
-  function libraryPlaylistBareTitle(p) {
-    const id = String(p?.id || '');
-    let title = cleanPlaylistTitleText(p?.title, id) || String(p?.title || '').trim();
-    title = cleanPlaylistTitleText(title, id);
-    if (!title || title === id || title === `Playlist ${id}` || title === `#${id}` || /^playlist$/i.test(title)) {
-      title = 'Playlist';
-    }
-    return title;
   }
 
   function promptPlaylistNameModal({
@@ -10974,9 +11873,7 @@
 
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
-    deleteBtn.className = librarySwitcherDeleteMode
-      ? `${NS}-btn ${NS}-btn--danger`
-      : `${NS}-btn`;
+    deleteBtn.className = `${NS}-btn ${NS}-btn--danger`;
     deleteBtn.dataset.act = 'delete-playlists';
     deleteBtn.textContent = 'Delete';
     deleteBtn.disabled = !!loading;
@@ -11283,9 +12180,11 @@
       const onKey = (e) => {
         if (e.key === 'Escape') {
           e.preventDefault();
+          e.stopPropagation();
           close(false);
         } else if (e.key === 'Enter') {
           e.preventDefault();
+          e.stopPropagation();
           close(true);
         }
       };
@@ -11334,12 +12233,14 @@
         thumbUrl =
           normalizeThumbUrl(qs(document, 'meta[property="og:image"]')?.getAttribute('content')) ||
           '';
+        durationSec = detailPageDurationSec();
       } else if (id) {
         const link =
           qs(document, `a[href*="/video/${id}/"]`) ||
           qs(document, `[data-video-id="${id}"] a[href*="/video/"]`);
         const card = link?.closest?.('.item.thumb, .thumb, [class*="item"]') || link?.parentElement;
         const t =
+          card?.querySelector?.('.thumb_title')?.textContent ||
           link?.getAttribute?.('title') ||
           link?.textContent ||
           card?.querySelector?.('.title')?.textContent ||
@@ -11347,7 +12248,11 @@
         if (String(t).trim()) title = String(t).replace(/\s+/g, ' ').trim();
         const img = card?.querySelector?.('img');
         thumbUrl = normalizeThumbUrl(img?.getAttribute?.('data-original') || img?.src) || '';
-        previewUrl = normalizeThumbUrl(img?.getAttribute?.('data-preview')) || '';
+        previewUrl =
+          normalizeThumbUrl(img?.getAttribute?.('data-preview')) ||
+          (card ? cardPreviewUrl(card) : '') ||
+          '';
+        durationSec = card ? cardDurationSec(card) : null;
       }
     } catch (_) {
       /* ignore DOM probes */
@@ -11355,10 +12260,10 @@
     return {
       videoId: id,
       title: title || id,
-      detailUrl: `https://rule34video.com/video/${id}/`,
+      detailUrl: `https://rule34video.com/video/${id}/v/`,
       favoritePage: 1,
       cardIndex: 0,
-      durationSec,
+      durationSec: coerceDurationSec(durationSec),
       thumbUrl,
       previewUrl,
       viewsText: '',
@@ -11407,6 +12312,9 @@
       if (scope === 'favorites') {
         if (myFavIdSet) myFavIdSet.add(videoId);
         favoritesIndexDirty = false;
+        // Refavorite must not keep a mid-range seq on page 1 — claim max+1.
+        await claimNewestOrdinals([videoId]);
+        if (isFavoritesPage()) scheduleOrdinalRepaint([0, 300]);
       }
       if (touchingCurrent) {
         const before = currentDisplayedLibraryTotal();
@@ -11430,17 +12338,17 @@
       refreshOpenLibrarySwitcherFromLabel();
       // Native unfavorite on Favorites may leave the card until AJAX redraw.
       if (isFavoritesPage() && scope === 'favorites') {
-        ignoreMutationsUntil = Date.now() + 1200;
-        parseCards().forEach((card) => {
-          if (String(card.videoId) === videoId) {
-            try {
-              card.el.remove();
-            } catch (_) {
-              /* ignore */
-            }
-          }
-        });
+        removeListCardsByIds([videoId]);
       }
+      // Refill native thumbs from site so deleted slots close (also keeps List
+      // under Compact full when switching views).
+      try {
+        await reloadCurrentListPageForced();
+      } catch (_) {
+        /* keep surgically removed cards */
+      }
+      // Full card-area repaint (Compact / Show matches refill; Show all marks).
+      await refreshActiveCardArea({ quiet: true, ensureIndex: false });
     }
   }
 
@@ -11454,22 +12362,6 @@
       if (!data || data.type !== 'hxyrule-native-fav') return;
       applyNativeFavouriteMutation(data).catch(() => {});
     });
-  }
-
-  async function resetSelectionForLibraryEntry() {
-    selectionLibraryKey = indexScopeKey();
-    selCollectCancel = true;
-    selProgress = null;
-    try {
-      await send('SELECTION_CLEAR');
-    } catch (_) {
-      /* ignore */
-    }
-    try {
-      clearAllNativeSelectionOnPage();
-    } catch (_) {
-      /* ignore */
-    }
   }
 
   async function recoverFailedQueueOnPageLoad() {
@@ -11651,11 +12543,13 @@
     const bar = ensureControls();
     if (bar.dataset.wired === '1') {
       wirePageRangeInputs(bar);
+      wireSeqRangeInputs(bar);
       wireDurationFilterInputs(bar);
       return bar;
     }
     bar.dataset.wired = '1';
     wirePageRangeInputs(bar);
+    wireSeqRangeInputs(bar);
     wireDurationFilterInputs(bar);
     bar.addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-act]');
@@ -11729,8 +12623,13 @@
         await selectAllOnPage();
       } else if (act === 'select-pages') {
         await selectPageRangeFromInputs();
+      } else if (act === 'select-seqs') {
+        await selectSeqRangeFromInputs();
       } else if (act === 'select-matches') {
         await selectAllMatches();
+      } else if (act === 'view-selected') {
+        if (viewButtonsLocked()) return;
+        await applySelectedCompactView();
       } else if (act === 'download') {
         await doDownloadSelected();
       } else if (act === 'rebuild-ordinals') {
@@ -11815,6 +12714,51 @@
     // Document-level capture survives AJAX / goToFavoritesPage innerHTML replaces.
     if (cardClickDelegateWired) return;
     cardClickDelegateWired = true;
+    // Matches/Compact clones: fix donor href before Chrome reads linkUrl for
+    // "Open link in new tab" / extension context menus.
+    document.addEventListener(
+      'contextmenu',
+      (e) => {
+        if (!compactViewActive) return;
+        if (!(e.target instanceof Element)) return;
+        const item = e.target.closest(
+          `.item.thumb[data-hxyrule-compact="1"], .${NS}-compact-thumbs .item.thumb`,
+        );
+        if (!item) return;
+        const id = thumbVideoIdFromEl(item);
+        if (!/^\d+$/.test(id)) return;
+        const detailUrl = detailUrlForVideoId(id);
+        const popupUrl = popupUrlForVideoId(id);
+        const link =
+          e.target.closest('a[href]') ||
+          qs(item, 'a.th.js-open-popup, a.th') ||
+          qs(item, 'a[href*="/video/"]');
+        if (link && item.contains(link)) {
+          const href = link.getAttribute('href') || '';
+          if (hrefVideoIdMismatch(href, id) || !href.includes(`/video/${id}/`)) {
+            if (/\/popup-video\//i.test(href)) {
+              link.setAttribute('href', popupUrl);
+              link.href = popupUrl;
+            } else {
+              link.setAttribute('href', detailUrl);
+              link.href = detailUrl;
+            }
+          }
+        }
+        qsa(item, 'a[href]').forEach((node) => {
+          const href = node.getAttribute('href') || '';
+          if (!hrefVideoIdMismatch(href, id)) return;
+          if (/\/popup-video\//i.test(href)) {
+            node.setAttribute('href', popupUrl);
+            node.href = popupUrl;
+          } else {
+            node.setAttribute('href', detailUrl);
+            node.href = detailUrl;
+          }
+        });
+      },
+      true,
+    );
     document.addEventListener(
       'click',
       (e) => {
@@ -12113,13 +13057,8 @@
 
     cards.forEach((card) => {
       if (isCardChecked(card)) {
-        items[card.videoId] = {
-          videoId: card.videoId,
-          title: card.title,
-          detailUrl: card.detailUrl,
-          favoritePage: card.favoritePage,
-          cardIndex: card.cardIndex,
-        };
+        const entry = selectionBagEntryFromVideo(card, page);
+        if (entry) items[card.videoId] = entry;
       }
     });
 
@@ -12231,6 +13170,127 @@
     return parsePageFromParams(raw);
   }
 
+  function selectionBagEntryFromVideo(v, fallbackPage = 0) {
+    const id = String(v?.videoId || '');
+    if (!id) return null;
+    return {
+      videoId: id,
+      title: v.title || id,
+      detailUrl: v.detailUrl || `https://rule34video.com/video/${id}/v/`,
+      favoritePage: Number(v.favoritePage) || fallbackPage || 0,
+      cardIndex: Number.isInteger(v.cardIndex) ? v.cardIndex : Number(v.cardIndex) || 0,
+      durationSec: coerceDurationSec(v.durationSec),
+      thumbUrl: normalizeThumbUrl(v.thumbUrl) || '',
+      previewUrl: normalizeThumbUrl(v.previewUrl) || '',
+    };
+  }
+
+  /**
+   * Page range against Compact / Selected list (same paging as Jump / This page).
+   * No network — slices compactMatchedItems in the current sort order.
+   */
+  async function collectCompactViewPages(start, end, items, baseCount) {
+    const per = Math.max(1, compactPerPage());
+    const pageCount = Math.max(1, end - start + 1);
+    let expectedTotal = pageCount * per;
+    let fetched = 0;
+    selProgress = { base: baseCount, fetched: 0, total: expectedTotal };
+    updateToolbarLabels();
+    for (let page = start; page <= end; page += 1) {
+      if (selCollectCancel) break;
+      const batch = compactMatchedItems.slice((page - 1) * per, page * per);
+      fetched += batch.length;
+      if (page === start && batch.length > 0) {
+        expectedTotal = pageCount * Math.max(per, batch.length);
+      }
+      batch.forEach((v) => {
+        const entry = selectionBagEntryFromVideo(v, page);
+        if (entry) items[entry.videoId] = entry;
+      });
+      selCountCached = Object.keys(items).length;
+      selProgress = { base: baseCount, fetched, total: expectedTotal };
+      updateToolbarLabels();
+      await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
+      if (selCollectCancel) {
+        await send('SELECTION_CLEAR');
+        clearAllNativeSelectionOnPage();
+        break;
+      }
+      await restoreSelectionToPage(parseCards());
+      if (selCollectCancel) {
+        clearAllNativeSelectionOnPage();
+        break;
+      }
+    }
+    return { fetched, items };
+  }
+
+  /**
+   * Page range against native list pages (All / Matches).
+   * Matches view keeps only ids in the active matched set — same as This page
+   * skipping filtered-out cards.
+   */
+  async function collectNativeViewPages(start, end, items, baseCount) {
+    const matchOnly =
+      filterState.active &&
+      filterState.matchedIds instanceof Set &&
+      filterState.matchedIds.size > 0;
+    const pageCount = Math.max(1, end - start + 1);
+    const perPage = Math.max(1, cardsPerPageEstimate());
+    let expectedTotal = pageCount * perPage;
+    let fetched = 0;
+    selProgress = { base: baseCount, fetched: 0, total: expectedTotal };
+    updateToolbarLabels();
+    for (let page = start; page <= end; page += 1) {
+      if (selCollectCancel) break;
+      try {
+        const data = await fetchListPage(page);
+        if (selCollectCancel) break;
+        const batch = data.items || [];
+        let kept = 0;
+        if (page === start && batch.length > 0) {
+          stablePerPage = Math.max(stablePerPage || 0, batch.length);
+          expectedTotal = pageCount * Math.max(stablePerPage, batch.length);
+        }
+        batch.forEach((it) => {
+          const id = String(it?.videoId || '');
+          if (!id) return;
+          if (matchOnly && !filterState.matchedIds.has(id)) return;
+          items[id] = it;
+          kept += 1;
+        });
+        fetched += matchOnly ? kept : batch.length;
+      } catch (err) {
+        if (selCollectCancel) break;
+        setError(`Select pages paused: ${err.message}`);
+        await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
+        await restoreSelectionToPage(parseCards());
+        selProgress = null;
+        await refreshSelectionCount(items);
+        return { fetched, items, paused: true };
+      }
+      if (selCollectCancel) break;
+      selCountCached = Object.keys(items).length;
+      selProgress = { base: baseCount, fetched, total: expectedTotal };
+      updateToolbarLabels();
+      // Persist incrementally so selection survives if the tab is interrupted.
+      await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
+      // Clear may have raced during SET; wipe again so the loop cannot resurrect picks.
+      if (selCollectCancel) {
+        await send('SELECTION_CLEAR');
+        clearAllNativeSelectionOnPage();
+        break;
+      }
+      await restoreSelectionToPage(parseCards());
+      if (selCollectCancel) {
+        clearAllNativeSelectionOnPage();
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    return { fetched, items, paused: false };
+  }
+
   async function collectPages(start, end) {
     if (selCollectRunning) {
       setError('Page range already running — click Clear to stop it first.');
@@ -12247,57 +13307,13 @@
         return;
       }
       const items = { ...(sel.items || {}) };
-      const pageCount = Math.max(1, end - start + 1);
-      const perPage = Math.max(1, cardsPerPageEstimate());
-      let expectedTotal = pageCount * perPage;
-      let fetched = 0;
       const baseCount = Object.keys(items).length;
       selCountCached = baseCount;
       // N + (a/b) = selection before range · videos fetched so far / expected in range.
-      selProgress = { base: baseCount, fetched: 0, total: expectedTotal };
-      updateToolbarLabels();
-      for (let page = start; page <= end; page += 1) {
-        if (selCollectCancel) break;
-        try {
-          const data = await fetchListPage(page);
-          if (selCollectCancel) break;
-          const batch = data.items || [];
-          fetched += batch.length;
-          if (page === start && batch.length > 0) {
-            stablePerPage = Math.max(stablePerPage || 0, batch.length);
-            expectedTotal = pageCount * Math.max(stablePerPage, batch.length);
-          }
-          batch.forEach((it) => {
-            items[it.videoId] = it;
-          });
-        } catch (err) {
-          if (selCollectCancel) break;
-          setError(`Select pages paused: ${err.message}`);
-          await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
-          await restoreSelectionToPage(parseCards());
-          selProgress = null;
-          await refreshSelectionCount(items);
-          return;
-        }
-        if (selCollectCancel) break;
-        selCountCached = Object.keys(items).length;
-        selProgress = { base: baseCount, fetched, total: expectedTotal };
-        updateToolbarLabels();
-        // Persist incrementally so selection survives if the tab is interrupted.
-        await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
-        // Clear may have raced during SET; wipe again so the loop cannot resurrect picks.
-        if (selCollectCancel) {
-          await send('SELECTION_CLEAR');
-          clearAllNativeSelectionOnPage();
-          break;
-        }
-        await restoreSelectionToPage(parseCards());
-        if (selCollectCancel) {
-          clearAllNativeSelectionOnPage();
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 800));
-      }
+      const result = compactViewActive
+        ? await collectCompactViewPages(start, end, items, baseCount)
+        : await collectNativeViewPages(start, end, items, baseCount);
+      if (result?.paused) return;
       if (selCollectCancel) {
         selProgress = null;
         selCountCached = 0;
@@ -12306,6 +13322,7 @@
         return;
       }
       const n = Object.keys(items).length;
+      const fetched = Number(result?.fetched) || 0;
       selProgress = null;
       await send('SELECTION_SET', { selection: { items, updatedAt: Date.now() } });
       if (selCollectCancel) {
@@ -12320,10 +13337,21 @@
       await refreshSelectionCount(items);
       if (!n) {
         setError(
-          'Select pages found 0 videos. Reload the extension and retry; login or site AJAX params may have changed.',
+          compactViewActive
+            ? 'Select pages found 0 videos in the current View.'
+            : 'Select pages found 0 videos. Reload the extension and retry; login or site AJAX params may have changed.',
         );
       } else if (fetched === 0) {
-        setError('Select pages request succeeded but parsed 0 videos.');
+        const matchesView =
+          !compactViewActive &&
+          filterState.active &&
+          filterState.matchedIds instanceof Set &&
+          filterState.matchedIds.size > 0;
+        setError(
+          compactViewActive || matchesView
+            ? 'Select pages matched 0 videos in that range for the current View.'
+            : 'Select pages request succeeded but parsed 0 videos.',
+        );
       }
     } finally {
       selCollectRunning = false;
@@ -12349,10 +13377,6 @@
       statusFlash = '';
       paintStatus();
     }, 2200);
-  }
-
-  function setMeta(_text) {
-    // Status lives in the row-3 status chip (ensureStatusBar / paintStatus).
   }
 
   function applyDownloadProgress(st) {
@@ -12620,6 +13644,7 @@
         ].join('\n'),
         okLabel: 'Delete',
         cancelLabel: 'Cancel',
+        danger: true,
       });
       if (!ok) return;
       if (btn) btn.textContent = `Deleting ${selected.length}…`;
@@ -12695,7 +13720,7 @@
       if (!valid.length) {
         const empty = document.createElement('p');
         empty.style.cssText = 'margin:0;font-size:12px;color:#cfd6dd';
-        empty.textContent = 'No playlists auto-detected — paste a playlist URL or ID below.';
+        empty.textContent = 'No playlists auto-detected.';
         list.appendChild(empty);
       } else {
         valid.forEach((p, i) => {
@@ -12719,19 +13744,6 @@
           list.appendChild(lab);
         });
       }
-      const manualWrap = document.createElement('div');
-      manualWrap.style.cssText = 'margin:8px 0 0;';
-      const manualLab = document.createElement('label');
-      manualLab.style.cssText = 'display:block;font-size:12px;color:#cfd6dd;margin-bottom:4px;';
-      manualLab.textContent = 'Or playlist URL / ID';
-      const manual = document.createElement('input');
-      manual.type = 'text';
-      manual.className = `${NS}-playlist-manual`;
-      manual.placeholder = 'https://rule34video.com/my/playlists/123456/';
-      manual.style.cssText =
-        'width:100%;box-sizing:border-box;padding:7px 10px;border-radius:6px;border:1px solid #3a4550;background:#1a222a;color:#e8eef4;';
-      manualWrap.appendChild(manualLab);
-      manualWrap.appendChild(manual);
       const actions = document.createElement('div');
       actions.className = `${NS}-modal__actions`;
       const cancel = document.createElement('button');
@@ -12739,22 +13751,21 @@
       cancel.className = `${NS}-btn`;
       cancel.dataset.act = 'cancel';
       cancel.textContent = 'Cancel';
-      const saveBtn = document.createElement('button');
-      saveBtn.type = 'button';
-      saveBtn.className = `${NS}-btn`;
-      saveBtn.dataset.act = 'save';
-      saveBtn.textContent = 'Move (keep favorites)';
       const moveBtn = document.createElement('button');
       moveBtn.type = 'button';
-      moveBtn.className = `${NS}-btn ${NS}-btn--danger`;
+      moveBtn.className = `${NS}-btn`;
       moveBtn.dataset.act = 'move';
       moveBtn.textContent = 'Move (remove from favorites)';
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = `${NS}-btn ${NS}-btn--pink`;
+      saveBtn.dataset.act = 'save';
+      saveBtn.textContent = 'Move (keep favorites)';
       actions.appendChild(cancel);
-      actions.appendChild(saveBtn);
       actions.appendChild(moveBtn);
+      actions.appendChild(saveBtn);
       modal.appendChild(h3);
       modal.appendChild(list);
-      modal.appendChild(manualWrap);
       modal.appendChild(actions);
       backdrop.appendChild(modal);
       const pickIds = () => {
@@ -12767,7 +13778,6 @@
           ids.push(id);
         };
         qsa(backdrop, `input[name="${NS}-playlist"]:checked`).forEach((inp) => add(inp.value));
-        add(manual.value);
         return ids;
       };
       const close = (val) => {
@@ -12778,30 +13788,51 @@
       const finish = (mode) => {
         const playlistIds = pickIds();
         if (!playlistIds.length) {
-          setError('Select or paste a valid playlist URL / ID first');
-          return;
+          setError('Select a playlist first');
+          return null;
         }
-        close({ playlistIds, playlistId: playlistIds[0], mode });
+        return { playlistIds, playlistId: playlistIds[0], mode };
+      };
+      const confirmRemoveFromFav = async () => {
+        const picked = finish('move');
+        if (!picked) return;
+        const ok = await confirmModal({
+          title: 'Remove from favorites?',
+          body:
+            'Add selected videos to the playlist and remove them from favorites.\nThis cannot be undone here.',
+          okLabel: 'Remove from favorites',
+          cancelLabel: 'Cancel',
+          danger: true,
+        });
+        if (!ok) return;
+        close(picked);
       };
       const onKey = (e) => {
+        // Stacked confirm (remove-from-fav) owns Escape/Enter while open.
+        if (qs(document, `.${NS}-modal-backdrop--stack`)) return;
         if (e.key === 'Escape') {
           e.preventDefault();
           close(null);
         } else if (e.key === 'Enter') {
           e.preventDefault();
-          finish('save');
+          const picked = finish('save');
+          if (picked) close(picked);
         }
       };
       document.addEventListener('keydown', onKey, true);
       backdrop.addEventListener('click', (e) => {
         const act = e.target?.dataset?.act;
         if (e.target === backdrop || act === 'cancel') close(null);
-        else if (act === 'save') finish('save');
-        else if (act === 'move') finish('move');
+        else if (act === 'save') {
+          const picked = finish('save');
+          if (picked) close(picked);
+        } else if (act === 'move') {
+          void confirmRemoveFromFav();
+        }
       });
       document.body.appendChild(backdrop);
       if (valid.length) saveBtn.focus();
-      else manual.focus();
+      else cancel.focus();
     });
   }
 
@@ -13078,173 +14109,6 @@
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
-  async function saveVideosToPlaylist(playlistId, videoIds) {
-    const ids = videoIds.map(String);
-    let ok = 0;
-    let failed = 0;
-    const errors = [];
-    for (let i = 0; i < ids.length; i += 1) {
-      const id = ids[i];
-      let added = await addOneKeepFavorites(playlistId, id);
-      if (!added.ok) {
-        try {
-          const bg = await send('SITE_PLAYLIST_ADD', {
-            playlistId,
-            videoIds: [id],
-            mode: 'save',
-          });
-          if (bg?.ok > 0 || (bg?.ok === 1 && !bg?.failed)) {
-            added = { ok: true };
-          } else if (bg?.errors?.[0]) {
-            added = { ok: false, detail: bg.errors[0] };
-          }
-        } catch (err) {
-          added = { ok: false, detail: String(err.message || err) };
-        }
-      }
-      if (added.ok) ok += 1;
-      else {
-        failed += 1;
-        if (errors.length < 6) errors.push(`${id}: ${added.detail || 'failed'}`);
-      }
-      if (i + 1 < ids.length) await new Promise((r) => setTimeout(r, 140));
-    }
-    return { ok, failed, errors, total: ids.length };
-  }
-
-  async function saveVideosToMyFavorites(videoIds) {
-    const ids = [...new Set((videoIds || []).map(String).filter((id) => /^\d+$/.test(id)))];
-    let ok = 0;
-    let failed = 0;
-    const errors = [];
-    const okIds = [];
-    for (let i = 0; i < ids.length; i += 1) {
-      const added = await addOneToMyFavorites(ids[i]);
-      if (added.ok) {
-        ok += 1;
-        okIds.push(ids[i]);
-      } else {
-        failed += 1;
-        if (errors.length < 6) errors.push(`${ids[i]}: ${added.detail || 'failed'}`);
-      }
-      if (i + 1 < ids.length) await new Promise((r) => setTimeout(r, 140));
-    }
-    return { ok, failed, errors, total: ids.length, okIds };
-  }
-
-  async function addOneToMyFavorites(videoId) {
-    const id = String(videoId);
-    const variants = [
-      { action: 'add_to_favourites', video_id: id, video_ids: [id], fav_type: '0', playlist_id: '0' },
-      { action: 'add_to_favourites', video_id: id, video_ids: [id], fav_type: '0' },
-      { action: 'add_to_favourites', video_id: id, fav_type: '0', playlist_id: '0' },
-      { action: 'add_to_favourites', video_id: id, video_ids: [id] },
-    ];
-    const bases = [
-      `https://rule34video.com/video/${id}/`,
-      'https://rule34video.com/',
-      String(location.href).split('#')[0],
-    ];
-    let lastDetail = '';
-    for (const params of variants) {
-      for (const base of bases) {
-        const q = new URLSearchParams({ mode: 'async', format: 'json' });
-        Object.entries(params).forEach(([k, v]) => {
-          if (v == null) return;
-          if (Array.isArray(v)) v.forEach((item) => q.append(`${k}[]`, String(item)));
-          else q.set(k, String(v));
-        });
-        const url = `${base}${base.includes('?') ? '&' : '?'}${q.toString()}`;
-        try {
-          const res = await fetch(url, {
-            credentials: 'include',
-            headers: {
-              'X-Requested-With': 'XMLHttpRequest',
-              Accept: 'application/json, text/javascript, */*;q=0.1',
-            },
-          });
-          const raw = (await res.text()).trim();
-          let json = null;
-          try {
-            json = JSON.parse(raw);
-          } catch (_) {
-            lastDetail = `non-JSON HTTP ${res.status}`;
-            continue;
-          }
-          if (String(json?.status) === 'success') return { ok: true };
-          lastDetail =
-            json?.errors?.[0]?.code ||
-            json?.errors?.[0]?.message ||
-            json?.message ||
-            json?.status ||
-            'unknown';
-          if (String(lastDetail) === 'invalid_params') continue;
-          if (String(json?.status) === 'failure') break;
-        } catch (err) {
-          lastDetail = String(err.message || err);
-        }
-      }
-    }
-    try {
-      const bg = await send('SITE_FAVOURITES_ADD', { videoIds: [id] });
-      if (bg?.ok > 0) return { ok: true };
-      if (bg?.errors?.[0]) lastDetail = bg.errors[0];
-    } catch (err) {
-      lastDetail = String(err.message || err);
-    }
-    return { ok: false, detail: lastDetail || 'invalid_params' };
-  }
-
-  async function addOneKeepFavorites(playlistId, videoId) {
-    const pid = String(playlistId);
-    const id = String(videoId);
-    const variants = [
-      { action: 'add_to_favourites', video_id: id, fav_type: '10', playlist_id: pid },
-      { action: 'add_to_favourites', video_id: id, video_ids: [id], fav_type: '10', playlist_id: pid },
-      { action: 'add_to_favourites', video_id: id, album_id: '', fav_type: '10', playlist_id: pid },
-    ];
-    const bases = [
-      `https://rule34video.com/video/${id}/`,
-      'https://rule34video.com/',
-      String(location.href).split('#')[0],
-    ];
-    let lastDetail = '';
-    for (const params of variants) {
-      for (const base of bases) {
-        const q = new URLSearchParams({ mode: 'async', format: 'json' });
-        Object.entries(params).forEach(([k, v]) => {
-          if (v == null) return;
-          if (Array.isArray(v)) v.forEach((item) => q.append(`${k}[]`, String(item)));
-          else q.set(k, String(v));
-        });
-        const url = `${base}${base.includes('?') ? '&' : '?'}${q.toString()}`;
-        try {
-          const res = await fetch(url, {
-            credentials: 'include',
-            headers: {
-              'X-Requested-With': 'XMLHttpRequest',
-              Accept: 'application/json, text/javascript, */*;q=0.1',
-            },
-          });
-          const raw = (await res.text()).trim();
-          let json = null;
-          try {
-            json = JSON.parse(raw);
-          } catch (_) {
-            lastDetail = `non-JSON HTTP ${res.status}`;
-            continue;
-          }
-          if (String(json?.status) === 'success') return { ok: true };
-          lastDetail = json?.errors?.[0]?.code || json?.status || 'unknown';
-          if (lastDetail === 'invalid_params') continue;
-        } catch (err) {
-          lastDetail = String(err.message || err);
-        }
-      }
-    }
-    return { ok: false, detail: lastDetail || 'invalid_params' };
-  }
-
   async function deleteOneFromFavourites(videoId) {
     const id = String(videoId);
     const pid = isPlaylistDetailPage() ? currentPlaylistIdFromPath() : null;
@@ -13259,7 +14123,7 @@
           { action: 'delete_from_favourites', video_id: id },
         ];
     const bases = [
-      `https://rule34video.com/video/${id}/`,
+      `https://rule34video.com/video/${id}/v/`,
       'https://rule34video.com/',
       String(location.href).split('#')[0],
     ];
@@ -13360,188 +14224,6 @@
       }
     }
     return last;
-  }
-
-  async function contentAjaxMove(playlistId, videoIds) {
-    const form = findMoveControlForm();
-    const blockId = form?.getAttribute('data-block-id') || favoritesBlockId();
-    const params = { ...favoritesFormDataParameters() };
-    const raw = form?.getAttribute('data-parameters') || '';
-    if (raw) {
-      String(raw)
-        .split(';')
-        .forEach((pair) => {
-          const parts = pair.split(':');
-          if (parts.length === 2) {
-            try {
-              params[parts[0]] = decodeURIComponent(parts[1]).replace(/\+/g, ' ');
-            } catch (_) {
-              params[parts[0]] = parts[1];
-            }
-          }
-        });
-    }
-    const href = String(location.href).split('#')[0];
-    const base = {
-      ...params,
-      function: 'get_block',
-      block_id: blockId,
-      move_to_playlist_id: String(playlistId),
-    };
-    // Match jQuery.param array style (delete[]) then plain repeated delete=.
-    const encodings = ['brackets', 'plain'];
-    let last = { ok: false, detail: 'no attempt', url: '', deleteCount: videoIds.length };
-    for (const enc of encodings) {
-      const q = new URLSearchParams({ mode: 'async', format: 'json' });
-      Object.entries(base).forEach(([k, v]) => {
-        if (v == null || v === '') return;
-        q.set(k, String(v));
-      });
-      videoIds.forEach((id) => {
-        if (enc === 'brackets') q.append('delete[]', String(id));
-        else q.append('delete', String(id));
-      });
-      const url = `${href}${href.includes('?') ? '&' : '?'}${q.toString()}`;
-      const res = await fetch(url, {
-        credentials: 'include',
-        headers: {
-          'X-Requested-With': 'XMLHttpRequest',
-          Accept: 'application/json, text/javascript, */*;q=0.1',
-        },
-      });
-      const rawText = (await res.text()).trim();
-      let json = null;
-      try {
-        json = JSON.parse(rawText);
-      } catch (_) {
-        last = { ok: false, detail: `non-JSON HTTP ${res.status}`, url, deleteCount: videoIds.length };
-        continue;
-      }
-      last = {
-        ok: String(json?.status) === 'success',
-        detail: json?.errors?.[0]?.code || json?.status || 'unknown',
-        url,
-        deleteCount: videoIds.length,
-        enc,
-      };
-      if (last.ok) return last;
-    }
-    return last;
-  }
-
-  function kvsAjaxMove(playlistId, videoIds) {
-    const pid = String(playlistId);
-    const ids = videoIds.map(String);
-    const msgType = `${NS}-kvs-move-result`;
-    return new Promise((resolve) => {
-      let done = false;
-      const finish = (data) => {
-        if (done) return;
-        done = true;
-        window.removeEventListener('message', onMsg);
-        resolve(data);
-      };
-      const onMsg = (ev) => {
-        if (ev.source !== window) return;
-        if (!ev.data || ev.data.type !== msgType) return;
-        finish(ev.data);
-      };
-      window.addEventListener('message', onMsg);
-      const payload = { msgType, pid, ids };
-      try {
-        const script = document.createElement('script');
-        script.textContent = `(${function (p) {
-          function send(msg) {
-            window.postMessage(Object.assign({ type: p.msgType }, msg), '*');
-          }
-          try {
-            var $ = window.jQuery;
-            if (!$ || !$.ajax || !$.param) {
-              send({ ok: false, detail: 'jQuery missing' });
-              return;
-            }
-            var btn =
-              document.querySelector('[data-action="move_multi"]') ||
-              document.querySelector('[data-action="move_to_playlist"]');
-            var form =
-              (btn && (btn.closest('form[data-controls]') || btn.closest('form'))) ||
-              document.querySelector('#list_videos_my_favourite_videos form[data-controls]') ||
-              document.querySelector('form[data-controls]') ||
-              document.querySelector('#list_videos_my_favourite_videos');
-            if (!form) {
-              send({ ok: false, detail: 'control form missing' });
-              return;
-            }
-            var blockId =
-              form.getAttribute('data-block-id') ||
-              'list_videos_my_favourite_videos';
-            var raw = form.getAttribute('data-parameters') || '';
-            var params = {};
-            String(raw)
-              .split(';')
-              .forEach(function (pair) {
-                var parts = pair.split(':');
-                if (parts.length === 2) {
-                  try {
-                    params[parts[0]] = decodeURIComponent(parts[1]).replace(/\+/g, ' ');
-                  } catch (e) {
-                    params[parts[0]] = parts[1];
-                  }
-                }
-              });
-            params.function = 'get_block';
-            params.block_id = blockId;
-            params.move_to_playlist_id = p.pid;
-            params.delete = p.ids.slice();
-            var href = String(window.location.href).split('#')[0];
-            var url = href + (href.indexOf('?') >= 0 ? '&' : '?') + 'mode=async&format=json&' + $.param(params);
-            $.ajax({
-              url: url,
-              type: 'GET',
-              success: function (t) {
-                if (typeof t !== 'object') {
-                  try {
-                    t = JSON.parse(t);
-                  } catch (e) {
-                    send({ ok: false, detail: 'non-JSON', url: url });
-                    return;
-                  }
-                }
-                send({
-                  ok: !!(t && t.status === 'success'),
-                  detail:
-                    (t && t.errors && t.errors[0] && (t.errors[0].code || t.errors[0].message)) ||
-                    (t && t.status) ||
-                    'unknown',
-                  url: url,
-                  deleteCount: p.ids.length,
-                });
-              },
-              error: function (xhr) {
-                send({ ok: false, detail: 'HTTP ' + (xhr && xhr.status), url: url });
-              },
-            });
-          } catch (err) {
-            send({ ok: false, detail: String(err && err.message ? err.message : err) });
-          }
-        }})(${JSON.stringify(payload)});`;
-        (document.documentElement || document.head).appendChild(script);
-        script.remove();
-      } catch (err) {
-        finish({ ok: false, detail: String(err.message || err) });
-        return;
-      }
-      setTimeout(() => finish({ ok: false, detail: 'ajax timeout/CSP' }), 12000);
-    });
-  }
-
-  function favoritesBlockId() {
-    const form = findFavoritesControlForm();
-    return (
-      form?.getAttribute('data-block-id') ||
-      qs(document, '#list_videos_my_favourite_videos')?.getAttribute('data-block-id') ||
-      'list_videos_my_favourite_videos'
-    );
   }
 
   function favoritesFormDataParameters() {
@@ -13655,13 +14337,16 @@
   }
 
   function forceNativeOnlinePopup(card) {
-    const href = card?.link?.getAttribute('href') || '';
-    const absHref = card?.link?.href || '';
     const videoId = String(card?.videoId || '');
-    if (!href && !absHref && !videoId) return;
+    const href =
+      detailUrlForVideoId(
+        videoId,
+        card?.link?.getAttribute('href') || card?.link?.href || card?.detailUrl || '',
+      ) || '';
+    if (!href && !videoId) return;
     ignoreCardClickUntil = Date.now() + 2500;
     send('PAGE_OPEN_POPUP', {
-      href: absHref || href,
+      href,
       videoId,
     })
       .then((result) => {
@@ -13882,6 +14567,59 @@
     }
   }
 
+  /** User F during online play: exit FS → small window, or re-enter from small window. */
+  function toggleOnlineSurfaceFullscreen(session) {
+    if (!session || session.finished) return;
+    const surface = session.surface;
+    if (!surface?.isConnected) return;
+    const fs = document.fullscreenElement || document.webkitFullscreenElement;
+    const inFs =
+      !!fs && (fs === surface || surface.contains(fs) || fs.contains?.(surface));
+    if (inFs) {
+      session.userExitedFullscreen = true;
+      syncPlayerFullscreenUi(surface, false);
+      const exitBtn = qs(surface, `.${NS}-fs-exit`);
+      if (exitBtn) {
+        exitBtn.hidden = true;
+        exitBtn.remove();
+      }
+      try {
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        } else if (document.webkitFullscreenElement) {
+          document.webkitExitFullscreen?.();
+        }
+      } catch (_) {
+        /* stay in small window */
+      }
+      return;
+    }
+    // Explicit re-enter (auto-promote refuses after userExitedFullscreen).
+    session.userExitedFullscreen = false;
+    session.surfaceFullscreenPromoted = true;
+    session.documentFullscreenRequested = true;
+    const request = surface.requestFullscreen || surface.webkitRequestFullscreen;
+    if (!request) return;
+    const markUi = () => {
+      if (session.finished || session.userExitedFullscreen) return;
+      const cur = document.fullscreenElement || document.webkitFullscreenElement;
+      if (cur && (cur === surface || surface.contains(cur) || cur.contains(surface))) {
+        syncPlayerFullscreenUi(surface, true);
+        ensureFsExitButton(session, surface);
+      }
+    };
+    try {
+      const pending = request.call(surface, { navigationUI: 'hide' });
+      if (pending && typeof pending.then === 'function') {
+        pending.then(markUi).catch(() => {});
+      } else {
+        markUi();
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
   function clearInjectedDeletes(form) {
     const root = form || document;
     qsa(root, `input[data-${NS}-delete="1"]`).forEach((el) => el.remove());
@@ -14068,43 +14806,6 @@
     throw new Error(lastErr || 'Could not load playlists');
   }
 
-  /** Page-world KVS move using explicit delete ids + control form data-parameters. */
-
-
-  async function verifyVideosInPlaylist(playlistId, videoIds) {
-    const pid = String(playlistId);
-    const ids = videoIds.map(String);
-    const urls = [
-      `https://rule34video.com/my/playlists/${pid}/`,
-      `https://rule34video.com/playlists/${pid}/`,
-    ];
-    for (const url of urls) {
-      try {
-        const res = await fetch(url, { credentials: 'include' });
-        const html = await res.text();
-        if (!html || html.length < 80) continue;
-        if (/login-required|\/login\//i.test(html) && html.length < 8000) continue;
-        const found = ids.filter(
-          (id) => html.includes(`/video/${id}/`) || html.includes(`value="${id}"`),
-        );
-        return { checked: true, found, missing: ids.filter((id) => !found.includes(id)), url };
-      } catch (_) {
-        /* next */
-      }
-    }
-    return { checked: false, found: [], missing: ids, url: '' };
-  }
-
-  /** Video-page style add: keeps My Favorites (fav_type=10 = playlist bucket). */
-
-
-  async function moveVideosToPlaylist(playlistId, videoIds) {
-    injectDeleteIdsIntoControlForm(videoIds);
-    let moved = await kvsAjaxMove(playlistId, videoIds);
-    if (!moved.ok) moved = await contentAjaxMove(playlistId, videoIds);
-    return moved;
-  }
-
   /**
    * 1) Load playlists
    * 2) User picks Save (keep fav) or Move (leave fav); playlists are multi-select
@@ -14167,7 +14868,7 @@
       }
       const ids = Object.keys(itemsMap || {});
       if (!ids.length) {
-        throw new Error('Nothing to add. Select videos first (This page / Page range / All matches).');
+        throw new Error('Nothing to add. Select videos first (This page / Page range / Seq range / All matches).');
       }
 
       playlistProgressLabel = 'loading…';
@@ -15026,6 +15727,7 @@
         body: `Remove ${ids.length} selected video(s) from ${where}? This cannot be undone here.`,
         okLabel: onPlaylist ? 'Remove from list' : 'Unfavorite',
         cancelLabel: 'Cancel',
+        danger: true,
       });
       if (!ok) return;
 
@@ -15057,17 +15759,7 @@
           if (i + 1 < ids.length) await new Promise((r) => setTimeout(r, 120));
         }
       }
-      ignoreMutationsUntil = Date.now() + 1200;
-      const want = new Set(succeededIds);
-      parseCards().forEach((card) => {
-        if (want.has(String(card.videoId))) {
-          try {
-            card.el.remove();
-          } catch (_) {
-            /* ignore */
-          }
-        }
-      });
+      removeListCardsByIds(succeededIds);
       if (succeededIds.length) {
         const scope = onPlaylist ? indexScopeKey() : 'favorites';
         // What the user sees on brand / Libraries "From:" — never index/known
@@ -15099,6 +15791,20 @@
       }
       await send('SELECTION_CLEAR');
       await refreshSelectionCount({});
+      if (succeededIds.length) {
+        // Refill native thumbs from the site so List / List (match) close the
+        // holes left by removeListCardsByIds (pull next videos onto this page).
+        // Compact already re-sliced in pruneIdsFromActiveMatchView; this keeps
+        // the hidden native grid full for a later List switch.
+        try {
+          await reloadCurrentListPageForced();
+        } catch (_) {
+          /* keep surgically removed cards */
+        }
+        // After selection clear: refill Compact / Show matches from the patched
+        // index (patchIndexRemoveIds already dropped the ids).
+        await refreshActiveCardArea({ quiet: true, ensureIndex: false });
+      }
       if (failed && !deleted) {
         throw new Error(
           `${verbFail} failed` +
@@ -15167,7 +15873,11 @@
       // Do not pre-hide the native list here — that left a blank page for the
       // whole Scan when restore was slow. restoreToolbarView hides only while
       // Compact DOM is actually building (now a cached-index paint).
-      if (normalizeViewMode(viewMode) === 'compact' || normalizeViewMode(viewMode) === 'matches') {
+      if (
+        normalizeViewMode(viewMode) === 'compact' ||
+        normalizeViewMode(viewMode) === 'selected' ||
+        normalizeViewMode(viewMode) === 'matches'
+      ) {
         viewRestorePending = true;
       }
       wireToolbar();
@@ -15227,10 +15937,6 @@
     }
   }
 
-  function playlistListRoot() {
-    return listBoxEl() || qs(document, '.thumbs') || document.body;
-  }
-
   async function bootPlaylistPage() {
     bootInProgress = true;
     try {
@@ -15254,7 +15960,11 @@
       // switch already does this in clearSelectionIfLibraryChanged).
       await loadToolbarFilters();
       // Do not pre-hide the native list for the whole Scan (see bootFavorites).
-      if (normalizeViewMode(viewMode) === 'compact' || normalizeViewMode(viewMode) === 'matches') {
+      if (
+        normalizeViewMode(viewMode) === 'compact' ||
+        normalizeViewMode(viewMode) === 'selected' ||
+        normalizeViewMode(viewMode) === 'matches'
+      ) {
         viewRestorePending = true;
       }
       wireToolbar();

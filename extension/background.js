@@ -1,7 +1,6 @@
 import { getConfig, helperFetch, helperHealth } from './lib/helper.js';
 
-const DOWNLOAD_MIME_OK = true;
-/** Parallel Chrome downloads + Helper claims (was 1). */
+/** Parallel Chrome downloads + Helper claims. */
 const DOWNLOAD_CONCURRENCY = 6;
 let activeJobCount = 0;
 let pumpInProgress = false;
@@ -158,8 +157,38 @@ function videoIdFromUrl(url) {
   return m ? m[1] : '';
 }
 
+/**
+ * Canonical watch URL for an id.
+ * Site now 404s on bare `/video/{id}/` — any slug segment works; `/v/` is stable.
+ */
 function videoUrlForId(videoId) {
-  return `https://rule34video.com/video/${videoId}/`;
+  return `https://rule34video.com/video/${videoId}/v/`;
+}
+
+/** True when URL is `/video/{id}` or `/video/{id}/` with no slug. */
+function isBareVideoDetailUrl(url) {
+  try {
+    const path = new URL(String(url || ''), 'https://rule34video.com').pathname;
+    return /^\/videos?\/\d+\/?$/i.test(path);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Prefer slug detail URLs; upgrade bare `/video/{id}/` to `/video/{id}/v/`. */
+function ensureVideoDetailUrl(url, videoId = '') {
+  const id = String(videoId || '').trim();
+  let raw = String(url || '').trim();
+  if (!raw && /^\d+$/.test(id)) return videoUrlForId(id);
+  if (!raw) return '';
+  if (!/^https?:\/\//i.test(raw)) {
+    raw = `https://rule34video.com${raw.startsWith('/') ? '' : '/'}${raw}`;
+  }
+  if (isBareVideoDetailUrl(raw)) {
+    const vid = id || (raw.match(/\/videos?\/(\d+)\b/i) || [])[1] || '';
+    return /^\d+$/.test(vid) ? videoUrlForId(vid) : raw;
+  }
+  return raw;
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -558,7 +587,7 @@ function parseTitle(html, fallback) {
     .trim();
 }
 
-async function resolveDownloadSource(detailUrl) {
+async function resolveDownloadSourceFromUrl(detailUrl) {
   const cfg = await getConfig();
   const res = await fetch(detailUrl, { credentials: 'include', redirect: 'follow' });
   if (res.status === 403 || res.status === 404) {
@@ -576,6 +605,35 @@ async function resolveDownloadSource(detailUrl) {
   if (!picked) throw new Error('no downloadable get_file URL found');
   const title = parseTitle(html, '');
   return { url: picked.href, quality: picked.quality, title, htmlLength: html.length };
+}
+
+/**
+ * Resolve a short-lived get_file URL. Bare `/video/{id}/` 404s on the site now,
+ * so upgrade to `/video/{id}/v/` and fall back to popup-video HTML (also has downloads).
+ */
+async function resolveDownloadSource(detailUrl, videoId = '') {
+  const id = String(videoId || '').trim();
+  const primary = ensureVideoDetailUrl(detailUrl, id);
+  const candidates = [];
+  if (primary) candidates.push(primary);
+  if (/^\d+$/.test(id)) {
+    const popup = `https://rule34video.com/popup-video/${id}/?popup_id=1`;
+    if (!candidates.includes(popup)) candidates.push(popup);
+    const canonical = videoUrlForId(id);
+    if (!candidates.includes(canonical)) candidates.push(canonical);
+  }
+  let lastErr = null;
+  for (const url of candidates) {
+    try {
+      return await resolveDownloadSourceFromUrl(url);
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || err || '');
+      // Hard auth / captcha: do not burn alternate URLs.
+      if (/login required|captcha|bot check/i.test(msg)) throw err;
+    }
+  }
+  throw lastErr || new Error('detail page fetch failed');
 }
 
 const DEFAULT_QUALITY = ['1080p', '720p', '480p', '360p'];
@@ -628,9 +686,9 @@ async function finalizeCompletedDownload(item, info, fallbackTitle = '') {
 }
 
 async function downloadOne(item) {
-  const detailUrl =
-    item.detailUrl || `https://rule34video.com/video/${item.videoId}/`;
-  const source = await resolveDownloadSource(detailUrl);
+  const videoId = String(item.videoId || '').trim();
+  const detailUrl = item.detailUrl || videoUrlForId(videoId);
+  const source = await resolveDownloadSource(detailUrl, videoId);
   const suggest = await helperFetch('/downloads/suggest-filename', {
     method: 'POST',
     body: {
@@ -1071,10 +1129,19 @@ function parseDurationSec(text) {
 }
 
 function extractDurationFromChunk(chunk) {
-  const m =
-    String(chunk || '').match(/class=["'][^"']*\btime\b[^"']*["'][^>]*>\s*([\d:]+)/i) ||
-    String(chunk || '').match(/<div\s+class=["']time["'][^>]*>\s*([\d:]+)/i);
-  return m ? parseDurationSec(m[1]) : null;
+  const src = String(chunk || '');
+  // Prefer the .time node; site often nests an icon before the clock text.
+  const tagged =
+    src.match(/class=["'][^"']*\btime\b[^"']*["'][^>]*>([\s\S]*?)<\//i) ||
+    src.match(/<div\s+class=["']time["'][^>]*>([\s\S]*?)<\//i);
+  if (tagged) {
+    const inner = tagged[1].replace(/<[^>]+>/g, ' ');
+    const d = parseDurationSec(inner);
+    if (d != null) return d;
+  }
+  // Fallback: first MM:SS / H:MM:SS in the card block.
+  const clock = src.match(/\b(\d+:\d{2}(?::\d{2})?)\b/);
+  return clock ? parseDurationSec(clock[1]) : null;
 }
 
 function parseDurationMap(html) {
@@ -1320,9 +1387,9 @@ async function addVideosToSitePlaylist(playlistId, videoIds, mode = 'save') {
   if (!ids.length) throw new Error('no video ids');
 
   // save = add_to_favourites fav_type=10 (keeps My Favorites)
-  // move is handled in the content script via move_to_playlist_id
+  // move = moveVideosToSitePlaylist (get_block, else add + delete_from_favourites)
   if (mode === 'move') {
-    throw new Error('move mode must run in favorites page content script');
+    throw new Error('move mode uses moveVideosToSitePlaylist');
   }
 
   let ok = 0;
@@ -1358,7 +1425,7 @@ async function addOneViaFavouritesAction(playlistId, videoId) {
     { action: 'add_to_favourites', video_id: id, playlist_id: pid },
   ];
   const bases = [
-    `https://rule34video.com/video/${id}/`,
+    `https://rule34video.com/video/${id}/v/`,
     'https://rule34video.com/',
     'https://rule34video.com/my/favourites/videos/',
   ];
@@ -1396,7 +1463,7 @@ async function addOneToMyFavourites(videoId) {
     { action: 'add_to_favourites', video_id: id, video_ids: [id] },
   ];
   const bases = [
-    `https://rule34video.com/video/${id}/`,
+    `https://rule34video.com/video/${id}/v/`,
     'https://rule34video.com/',
     'https://rule34video.com/my/favourites/videos/',
   ];
@@ -1422,33 +1489,47 @@ async function addOneToMyFavourites(videoId) {
   return { ok: false, detail: lastDetail || 'invalid_params' };
 }
 
-async function addVideosToMyFavourites(videoIds) {
-  const ids = [
-    ...new Set((videoIds || []).map((v) => String(v).trim()).filter((v) => /^[1-9]\d*$/.test(v))),
+/** Remove one video from My Favorites (fav_type=0). */
+async function deleteOneFromMyFavourites(videoId) {
+  const id = String(videoId);
+  const variants = [
+    { action: 'delete_from_favourites', video_id: id, fav_type: '0', playlist_id: '0' },
+    { action: 'delete_from_favourites', video_id: id, video_ids: [id], fav_type: '0' },
+    { action: 'delete_from_favourites', video_id: id },
   ];
-  if (!ids.length) throw new Error('no video ids');
-  let ok = 0;
-  let failed = 0;
-  const errors = [];
-  for (const id of ids) {
-    const added = await addOneToMyFavourites(id);
-    if (added.ok) ok += 1;
-    else {
-      failed += 1;
-      if (errors.length < 8) errors.push(`${id}: ${added.detail || 'failed'}`);
+  const bases = [
+    `https://rule34video.com/video/${id}/v/`,
+    'https://rule34video.com/',
+    'https://rule34video.com/my/favourites/videos/',
+  ];
+  let lastDetail = '';
+  for (const params of variants) {
+    const qs = buildAsyncQuery(params);
+    for (const base of bases) {
+      const url = `${base}${base.includes('?') ? '&' : '?'}${qs}`;
+      try {
+        const res = await siteFetch(url, {
+          headers: { Accept: 'application/json, text/javascript, */*;q=0.1' },
+        });
+        const parsed = await parseJsonStatus(res);
+        if (parsed.ok) return { ok: true };
+        lastDetail = parsed.detail;
+        if (parsed.detail === 'invalid_params') continue;
+        if (String(parsed.json?.status) === 'failure') break;
+      } catch (err) {
+        lastDetail = String(err.message || err);
+      }
     }
-    await new Promise((r) => setTimeout(r, 120));
   }
-  if (ok === 0 && failed > 0) {
-    throw new Error(
-      `Add to Favorites failed for all ${failed}` +
-        (errors.length ? `: ${errors.slice(0, 3).join('; ')}` : ''),
-    );
-  }
-  return { total: ids.length, ok, failed, errors, method: 'add_to_favourites' };
+  return { ok: false, detail: lastDetail || 'invalid_params' };
 }
 
-/** Move selected Favorites videos into a playlist (leaves My Favorites). */
+/**
+ * Move Favorites videos into a playlist (leaves My Favorites).
+ * Native get_block+move_to_playlist_id often returns the HTML list block
+ * (HTTP 200, non-JSON) from the service worker — fall back to the JSON
+ * add_to_favourites + delete_from_favourites path that already works for Save.
+ */
 async function moveVideosToSitePlaylist(playlistId, videoIds) {
   const pid = String(playlistId || '').trim();
   if (!isValidPlaylistId(pid)) throw new Error('invalid playlist id');
@@ -1485,7 +1566,28 @@ async function moveVideosToSitePlaylist(playlistId, videoIds) {
       }
     }
   }
-  return { ok: false, detail: lastDetail, deleteCount: ids.length };
+
+  // Fallback: same JSON APIs as Save, then strip My Favorites.
+  for (const id of ids) {
+    const added = await addOneViaFavouritesAction(pid, id);
+    if (!added.ok) {
+      return {
+        ok: false,
+        detail: added.detail || lastDetail || 'add failed',
+        deleteCount: ids.length,
+      };
+    }
+    const removed = await deleteOneFromMyFavourites(id);
+    if (!removed.ok) {
+      return {
+        ok: false,
+        detail: `playlist ok, favorites remove failed: ${removed.detail || lastDetail}`,
+        deleteCount: ids.length,
+      };
+    }
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  return { ok: true, detail: 'add+delete', deleteCount: ids.length };
 }
 
 function normalizeJobItems(rawItems, videoIds) {
@@ -1497,7 +1599,7 @@ function normalizeJobItems(rawItems, videoIds) {
     out[key] = {
       videoId: key,
       title: String(hit.title || key),
-      detailUrl: String(hit.detailUrl || `https://rule34video.com/video/${key}/`),
+      detailUrl: String(hit.detailUrl || `https://rule34video.com/video/${key}/v/`),
       favoritePage: Number(hit.favoritePage) || 0,
       cardIndex: Number.isInteger(hit.cardIndex) ? hit.cardIndex : 0,
       durationSec:
@@ -1606,7 +1708,8 @@ function pageRebindAjaxPopups() {
   document
     .querySelectorAll(
       '.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact="1"] a.th, ' +
-        '.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact="1"] a[href*="/video/"]',
+        '.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact="1"] a.th[href], ' +
+        '.hxyrule-compact-thumbs .item.thumb[data-hxyrule-compact="1"] a.js-open-popup',
     )
     .forEach((el) => {
       if (el.dataset.hxyrulePopupBound === '1') return;
@@ -1704,12 +1807,14 @@ function pageReinitThumbLazyload() {
       /* ignore */
     }
   });
-  // Last resort only when the site plugin is missing: copy data-original → src
-  // the same way jquery.lazyload would for in-viewport thumbs.
-  if (!usedPlugin) {
+  // Promote placeholders even when the plugin ran. Reload under Compact hides
+  // the native grid (display:none); jquery.lazyload then binds but never swaps
+  // src — switching to List left black #1a222a poster boxes.
+  const promotePlaceholders = () => {
     root
       .querySelectorAll('img[data-original], img[data-src], img[data-lazy-src]')
       .forEach((img) => {
+        if (img.offsetParent === null && img.getClientRects().length === 0) return;
         const url =
           img.getAttribute('data-original') ||
           img.getAttribute('data-src') ||
@@ -1722,9 +1827,12 @@ function pageReinitThumbLazyload() {
           /grey\.gif|blank|spacer|placeholder|transparent|data:image\/gif/i.test(cur)
         ) {
           img.setAttribute('src', url);
+          img.classList.remove('lazy', 'lazy-load', 'lazyload');
         }
       });
-  }
+  };
+  if (!usedPlugin) promotePlaceholders();
+  else setTimeout(promotePlaceholders, 80);
   const kick = () => {
     try {
       window.dispatchEvent(new Event('scroll'));
@@ -2025,6 +2133,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           method: 'POST',
           body: { items: message.items || [] },
         });
+      case 'HELPER_ORDINALS_CLAIM_NEWEST':
+        return await helperFetch('/ordinals/claim-newest', {
+          method: 'POST',
+          body: { videoIds: message.videoIds || [] },
+        });
       case 'HELPER_ORDINALS_LOOKUP':
         return await helperFetch('/ordinals/lookup', {
           method: 'POST',
@@ -2215,14 +2328,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return await getPlaylistMembership();
       case 'SITE_PLAYLIST_LIST':
         return await listSitePlaylists();
-      case 'SITE_PLAYLIST_ADD':
-        return await addVideosToSitePlaylist(
-          message.playlistId,
-          message.videoIds || [],
-          message.mode || 'save',
-        );
-      case 'SITE_FAVOURITES_ADD':
-        return await addVideosToMyFavourites(message.videoIds || []);
       case 'FETCH_FAVORITES_PAGE':
         return await fetchFavoritesPage(message.page, {
           includeHtml: !!message.includeHtml,
@@ -2838,7 +2943,7 @@ function parseFavoriteCards(html, pageNum) {
     seen.add(id);
     items.push({
       videoId: id,
-      detailUrl: `https://rule34video.com/video/${id}/`,
+      detailUrl: `https://rule34video.com/video/${id}/v/`,
       title: id,
       favoritePage: pageNum,
       cardIndex: index,
@@ -2863,9 +2968,16 @@ function parseFavoriteCards(html, pageNum) {
         chunk.match(/class=["'][^"']*\bthumb_title\b[^"']*["'][^>]*>([\s\S]*?)<\//i) ||
         chunk.match(/title=["']([^"']+)["']/i);
       if (href) {
-        it.detailUrl = href[1].startsWith('http')
+        const raw = href[1].startsWith('http')
           ? href[1]
           : `https://rule34video.com${href[1]}`;
+        // Reject neighbor-card hrefs that landed in the same chunk window.
+        if (
+          raw.includes(`/video/${it.videoId}/`) &&
+          !/\/popup-video\//i.test(raw)
+        ) {
+          it.detailUrl = ensureVideoDetailUrl(raw, it.videoId);
+        }
       }
       if (title) it.title = stripHtmlText(title[1]) || it.title;
       if (it.durationSec == null) {
@@ -2898,11 +3010,14 @@ function parseFavoriteCards(html, pageNum) {
     const hrefMatch = block.match(/href=["'](https?:\/\/rule34video\.com\/video\/\d+\/[^"']+)["']/i)
       || block.match(/href=["'](\/video\/\d+\/[^"']+)["']/i);
     const titleMatch = block.match(/title=["']([^"']+)["']/i);
-    let detailUrl = `https://rule34video.com/video/${videoId}/`;
+    let detailUrl = `https://rule34video.com/video/${videoId}/v/`;
     if (hrefMatch) {
-      detailUrl = hrefMatch[1].startsWith('http')
+      const raw = hrefMatch[1].startsWith('http')
         ? hrefMatch[1]
         : `https://rule34video.com${hrefMatch[1]}`;
+      if (raw.includes(`/video/${videoId}/`) && !/\/popup-video\//i.test(raw)) {
+        detailUrl = ensureVideoDetailUrl(raw, videoId);
+      }
     }
     const meta = extractCardMetaFromChunk(block);
     items.push({
@@ -3021,12 +3136,26 @@ function idleIndexJob() {
 function mergeIndexRowFields(prev, row, pageNum, idx) {
   const id = String(row?.videoId || prev?.videoId || '').trim();
   const durationSec = coerceIndexDurationSec(row?.durationSec);
+  const pickDetail = (cand) => {
+    const raw = String(cand || '').trim();
+    if (
+      raw &&
+      raw.includes(`/video/${id}/`) &&
+      !/\/popup-video\//i.test(raw)
+    ) {
+      const abs = raw.startsWith('http') ? raw : `https://rule34video.com${raw}`;
+      return ensureVideoDetailUrl(abs, id);
+    }
+    return '';
+  };
   return {
     ...(prev || {}),
     videoId: id,
     title: row?.title || prev?.title || id,
     detailUrl:
-      row?.detailUrl || prev?.detailUrl || `https://rule34video.com/video/${id}/`,
+      pickDetail(row?.detailUrl) ||
+      pickDetail(prev?.detailUrl) ||
+      `https://rule34video.com/video/${id}/v/`,
     favoritePage:
       Number(row?.favoritePage) || pageNum || Number(prev?.favoritePage) || 0,
     cardIndex: Number.isInteger(row?.cardIndex) ? row.cardIndex : idx,
@@ -3052,8 +3181,25 @@ function mergeIndexRowFields(prev, row, pageNum, idx) {
 }
 
 /**
+ * Densely reassign favoritePage / cardIndex from newest-first array order.
+ * Keeps Favorited Compact sort aligned after page-1 promote merges.
+ */
+function reassignIndexPageCards(videos, pageSize) {
+  const list = Array.isArray(videos) ? videos : [];
+  const per = Math.max(1, Number(pageSize) || 12);
+  list.forEach((v, i) => {
+    if (!v || typeof v !== 'object') return;
+    v.favoritePage = Math.floor(i / per) + 1;
+    v.cardIndex = i % per;
+  });
+  return list;
+}
+
+/**
  * Merge one list page into an existing index.
- * Page 1: promote that page to the front (newest-first).
+ * Page 1: promote that page to the front (newest-first), then renumber
+ * page/card for the whole list (items pushed off page 1 used to keep stale
+ * slots and break Favorited order).
  * Other pages: upsert in place; append truly new ids (keeps mid-list order).
  */
 function mergeIndexPageVideos(existing, pageRows, pageNum) {
@@ -3082,7 +3228,9 @@ function mergeIndexPageVideos(existing, pageRows, pageNum) {
       if (seenPage.has(id)) return;
       merged.push(prevById.get(id));
     });
-    return merged;
+    // Full page-1 batch size is the real per-page stride for renumber.
+    const pageSize = Math.max(1, pageIds.length || 12);
+    return reassignIndexPageCards(merged, pageSize);
   }
   const merged = [];
   const emitted = new Set();
@@ -3407,9 +3555,9 @@ async function classifySexFromVideoDetail(videoId, detailUrl = '') {
   const urls = [];
   if (/^[1-9]\d*$/.test(id)) {
     urls.push(`https://rule34video.com/popup-video/${id}/`);
-    urls.push(`https://rule34video.com/video/${id}/`);
+    urls.push(videoUrlForId(id));
   }
-  const detail = String(detailUrl || '').trim();
+  const detail = ensureVideoDetailUrl(detailUrl, id);
   if (detail && /rule34video\.com\/videos?\//i.test(detail)) urls.push(detail);
   const unique = [...new Set(urls.filter(Boolean))];
   let lastErr = null;
@@ -4251,7 +4399,7 @@ function runIndexJob() {
               pageRows.push({
                 videoId: id,
                 title: it.title || id,
-                detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/`,
+                detailUrl: it.detailUrl || `https://rule34video.com/video/${id}/v/`,
                 favoritePage: Number(it.favoritePage) || nextPage,
                 cardIndex: Number.isInteger(it.cardIndex) ? it.cardIndex : idx,
                 durationSec: coerceIndexDurationSec(it.durationSec),
@@ -4784,6 +4932,26 @@ const PLAYLIST_ADD_JOB_KEY = 'hxyrulePlaylistAddJob';
 let playlistAddJobRunning = false;
 let playlistAddJobWriteChain = Promise.resolve();
 let playlistAddJobCancelFlag = false;
+/** Wall time of last playlist mutate start — used to keep add order stable. */
+let playlistAddLastStartMs = 0;
+
+/**
+ * Site lists are newest-first by add time; order keys look second-precision.
+ * A 140ms gap lets adjacent seq land in the same second and swap (…7,5,6,4…).
+ * Pace so each mutate starts at least ~1.05s later and in a new wall second.
+ */
+async function waitPlaylistAddOrderSlot() {
+  const minGapMs = 1050;
+  const now = Date.now();
+  const last = playlistAddLastStartMs;
+  let wait = last > 0 ? Math.max(0, last + minGapMs - now) : 0;
+  if (last > 0) {
+    const boundaryWait = Math.floor(last / 1000) * 1000 + 1000 + 40 - now;
+    if (boundaryWait > wait) wait = boundaryWait;
+  }
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  playlistAddLastStartMs = Date.now();
+}
 
 function idlePlaylistAddJob() {
   return {
@@ -4930,6 +5098,7 @@ async function startPlaylistAddJob({
       : saveList.length * ids.length;
   const phase = jobMode === 'move' && !saveList.length ? 'move' : 'save';
   playlistAddJobCancelFlag = false;
+  playlistAddLastStartMs = 0;
   const job = await writePlaylistAddJob({
     status: 'running',
     mode: jobMode,
@@ -5038,6 +5207,7 @@ function runPlaylistAddJob() {
             break;
           }
 
+          await waitPlaylistAddOrderSlot();
           let added = await addOneViaFavouritesAction(pid, vid);
           if (!added.ok) {
             // Keep parity with content fallback path.
@@ -5083,7 +5253,6 @@ function runPlaylistAddJob() {
             errors,
             error: '',
           });
-          await new Promise((r) => setTimeout(r, 140));
           continue;
         }
 
@@ -5143,6 +5312,7 @@ function runPlaylistAddJob() {
             });
             break;
           }
+          await waitPlaylistAddOrderSlot();
           const moved = await moveVideosToSitePlaylist(moveTarget, [vid]);
           job = await readPlaylistAddJob();
           if (job.cancelRequested || job.status === 'stopping' || playlistAddJobCancelFlag) {
@@ -5192,7 +5362,6 @@ function runPlaylistAddJob() {
             errors,
             error: '',
           });
-          await new Promise((r) => setTimeout(r, 140));
           continue;
         }
 

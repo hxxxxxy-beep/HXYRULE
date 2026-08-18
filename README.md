@@ -2,7 +2,7 @@
 
 Personal Chrome MV3 extension + macOS Helper for [Rule34Video](https://rule34video.com/) favorites and playlists: local scan, local-first playback (IINA), queued downloads (concurrency 6), cross-page selection, filters, indexes, and site playlist moves. Does not change the site server. Cookies and local paths never leave your machine.
 
-**Version:** extension `0.1.80`
+**Version:** extension `0.1.85`
 
 ## New Mac / new AI
 

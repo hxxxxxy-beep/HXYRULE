@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="HXYRULE">
+  <rect width="128" height="128" fill="#1e2830"/>
+  <defs>
+    <clipPath id="bar-l"><rect x="26" y="23" width="20" height="82" rx="4"/></clipPath>
+    <clipPath id="bar-r"><rect x="82" y="23" width="20" height="82" rx="4"/></clipPath>
+  </defs>
+  <rect x="26" y="23" width="20" height="82" rx="4" fill="#3f9a6f"/>
+  <rect x="82" y="23" width="20" height="82" rx="4" fill="#3f9a6f"/>
+  <rect x="26" y="23" width="20" height="10" fill="#4eb082" clip-path="url(#bar-l)"/>
+  <rect x="82" y="23" width="20" height="10" fill="#4eb082" clip-path="url(#bar-r)"/>
+  <polygon points="46,46 46,82 74,64" fill="#fff"/>
+</svg>

@@ -319,7 +319,11 @@ class Store:
     def ensure_ordinals(self, items: list[dict[str, Any]]) -> dict[str, int]:
         """Assign stable seq per video_id once. Never renumber; deletions leave gaps.
 
-        items: [{videoId, preferredSeq?}]. preferredSeq used only if free; else max+1.
+        items: [{videoId, preferredSeq?}]. Callers pass favorites in newest-first
+        DOM order. preferredSeq is only used when the ordinals table is empty
+        (cold start). Once any seq exists, new ids always get max+1… in
+        oldest-first order — never fill mid-range gaps (that put refavorites /
+        new hearts at 2563 next to 2562 and broke page order).
         """
         out: dict[str, int] = {}
         now = utc_now()
@@ -332,11 +336,13 @@ class Store:
                 int(r["seq"])
                 for r in self._conn.execute("SELECT seq FROM ordinals").fetchall()
             }
-            for raw in items:
+            pending: list[tuple[str, int, int]] = []
+            seen_new: set[str] = set()
+            for index, raw in enumerate(items):
                 if not isinstance(raw, dict):
                     continue
                 vid = str(raw.get("videoId") or "").strip()
-                if not VIDEO_ID_RE.fullmatch(vid):
+                if not VIDEO_ID_RE.fullmatch(vid) or vid in seen_new:
                     continue
                 existing = self._conn.execute(
                     "SELECT seq FROM ordinals WHERE video_id = ?", (vid,)
@@ -344,24 +350,157 @@ class Store:
                 if existing:
                     out[vid] = int(existing["seq"])
                     continue
+                seen_new.add(vid)
                 preferred = raw.get("preferredSeq")
-                seq = None
                 try:
                     pref = int(preferred) if preferred is not None else 0
                 except (TypeError, ValueError):
                     pref = 0
-                if pref >= 1 and pref not in used:
+                pending.append((vid, pref if pref >= 1 else 0, index))
+
+            def _take_next() -> int:
+                nonlocal next_seq
+                while next_seq in used:
+                    next_seq += 1
+                seq = next_seq
+                next_seq += 1
+                return seq
+
+            # Cold start only: honor unique free preferredSeq values.
+            cold = int(max_row["m"] or 0) == 0
+            pref_values = [p for _, p, _ in pending]
+            use_preferred = (
+                cold
+                and bool(pending)
+                and all(p >= 1 for p in pref_values)
+            )
+            if use_preferred:
+                unique = set(pref_values)
+                use_preferred = len(unique) == len(pref_values) and all(
+                    p not in used for p in unique
+                )
+
+            if use_preferred:
+                assign_order = pending
+            else:
+                # Oldest first: lower preferredSeq, or later DOM index when missing.
+                assign_order = sorted(
+                    pending,
+                    key=lambda t: (t[1] if t[1] >= 1 else 10**12, -t[2]),
+                )
+
+            for vid, pref, _index in assign_order:
+                if use_preferred:
                     seq = pref
                 else:
-                    while next_seq in used:
-                        next_seq += 1
-                    seq = next_seq
-                    next_seq += 1
+                    seq = _take_next()
                 self._conn.execute(
                     "INSERT INTO ordinals(video_id, seq, assigned_at) VALUES(?, ?, ?)",
                     (vid, seq, now),
                 )
                 used.add(seq)
+                out[vid] = seq
+            self._conn.commit()
+        return out
+
+    def claim_newest(self, video_ids: list[str]) -> dict[str, int]:
+        """Give these videos fresh top-of-library seqs (newest favorite = highest).
+
+        video_ids[0] = newest → highest new seq; video_ids[-1] = oldest in batch.
+        Drops any prior ordinal for each id (leaves a gap). Use on heart / add
+        so refavorites do not keep a mid-range seq like 2563 on page 1.
+        """
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for raw in video_ids:
+            vid = str(raw or "").strip()
+            if not VIDEO_ID_RE.fullmatch(vid) or vid in seen:
+                continue
+            seen.add(vid)
+            ordered.append(vid)
+        out: dict[str, int] = {}
+        if not ordered:
+            return out
+        now = utc_now()
+        with self._lock:
+            for vid in ordered:
+                self._conn.execute("DELETE FROM ordinals WHERE video_id = ?", (vid,))
+            used = {
+                int(r["seq"])
+                for r in self._conn.execute("SELECT seq FROM ordinals").fetchall()
+            }
+            max_row = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) AS m FROM ordinals"
+            ).fetchone()
+            next_seq = int(max_row["m"] or 0) + 1
+            # Oldest in batch first so the newest id receives the highest seq.
+            for vid in reversed(ordered):
+                while next_seq in used:
+                    next_seq += 1
+                seq = next_seq
+                next_seq += 1
+                self._conn.execute(
+                    "INSERT INTO ordinals(video_id, seq, assigned_at) VALUES(?, ?, ?)",
+                    (vid, seq, now),
+                )
+                used.add(seq)
+                out[vid] = seq
+            self._conn.commit()
+        return out
+
+    def realign_ordinals(self, items: list[dict[str, Any]]) -> dict[str, int]:
+        """Repair relative order among a batch without allocating new seq numbers.
+
+        items: [{videoId, preferredSeq}]. Keeps the same multiset of seq values
+        already assigned to these ids, but reassigns them so lower preferredSeq
+        (earlier favorite) gets the smaller seq. No-op when ids are missing or
+        preferred ranks already match seq ranks.
+        """
+        rows: list[tuple[str, int]] = []
+        seen: set[str] = set()
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            vid = str(raw.get("videoId") or "").strip()
+            if not VIDEO_ID_RE.fullmatch(vid) or vid in seen:
+                continue
+            try:
+                pref = int(raw.get("preferredSeq"))
+            except (TypeError, ValueError):
+                continue
+            if pref < 1:
+                continue
+            seen.add(vid)
+            rows.append((vid, pref))
+        out: dict[str, int] = {}
+        if len(rows) < 2:
+            return self.lookup_ordinals([vid for vid, _ in rows])
+        now = utc_now()
+        with self._lock:
+            current: dict[str, int] = {}
+            for vid, _pref in rows:
+                existing = self._conn.execute(
+                    "SELECT seq FROM ordinals WHERE video_id = ?", (vid,)
+                ).fetchone()
+                if not existing:
+                    continue
+                current[vid] = int(existing["seq"])
+            ranked = [(vid, pref) for vid, pref in rows if vid in current]
+            if len(ranked) < 2:
+                return current
+            by_pref = sorted(ranked, key=lambda t: (t[1], t[0]))
+            seqs = sorted(current[vid] for vid, _pref in by_pref)
+            # Already aligned?
+            if all(current[vid] == seq for (vid, _pref), seq in zip(by_pref, seqs)):
+                return current
+            # Clear then write to avoid UNIQUE(seq) collisions mid-update.
+            for vid, _pref in by_pref:
+                self._conn.execute("DELETE FROM ordinals WHERE video_id = ?", (vid,))
+            for (vid, _pref), seq in zip(by_pref, seqs):
+                self._conn.execute(
+                    "INSERT INTO ordinals(video_id, seq, assigned_at) VALUES(?, ?, ?)",
+                    (vid, seq, now),
+                )
                 out[vid] = seq
             self._conn.commit()
         return out
@@ -2236,6 +2375,20 @@ def make_handler(helper: Helper):
                     if not isinstance(items, list) or len(items) > 500:
                         raise ValueError("items must be a list of up to 500")
                     mapping = helper.store.ensure_ordinals(items)
+                    self._json(200, {"status": "ok", "ordinals": mapping})
+                    return
+                if path == "/ordinals/realign":
+                    items = body.get("items") or []
+                    if not isinstance(items, list) or len(items) > 500:
+                        raise ValueError("items must be a list of up to 500")
+                    mapping = helper.store.realign_ordinals(items)
+                    self._json(200, {"status": "ok", "ordinals": mapping})
+                    return
+                if path == "/ordinals/claim-newest":
+                    ids = body.get("videoIds") or []
+                    if not isinstance(ids, list) or len(ids) > 500:
+                        raise ValueError("videoIds must be a list of up to 500 ids")
+                    mapping = helper.store.claim_newest([str(x) for x in ids])
                     self._json(200, {"status": "ok", "ordinals": mapping})
                     return
                 if path == "/ordinals/rebuild":

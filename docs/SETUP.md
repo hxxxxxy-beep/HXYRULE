@@ -8,7 +8,7 @@ This document is enough to deploy without prior chat history. Read `README.md` f
 
 ## What this is
 
-- Chrome MV3 unpacked extension (`extension/`, version **0.1.80**)
+- Chrome MV3 unpacked extension (`extension/`, version **0.1.85**)
 - macOS LaunchAgent Helper (`mac-helper/`, `127.0.0.1:17934`)
 - Optional: `source-han-force/` (Source Han Serif on all pages; not required — see its README)
 - Personal enhancer only — does **not** change Rule34Video servers
@@ -25,7 +25,7 @@ This document is enough to deploy without prior chat history. Read `README.md` f
 | Pairing file | `~/Library/Application Support/HXYRULE/extension-config.json` |
 | GitHub / outbound proxy (if needed) | `http://127.0.0.1:7897` for git/`gh` only — never point Helper at it |
 
-Extension ID is assigned when you load the unpacked extension (example on one Mac: `eldakhcdkbkjifnpobghpjpidfpbngdb`). Always use the ID from `chrome://extensions` on **this** Mac.
+Extension ID is assigned when you load the unpacked extension (32 chars, `a–p` only). Always use the ID from `chrome://extensions` on **this** Mac — do not reuse an ID from another machine.
 
 ## Deploy steps (do in order)
 
@@ -56,7 +56,7 @@ chmod +x scripts/deploy-mac.sh mac-helper/install.sh mac-helper/uninstall.sh
 ./scripts/deploy-mac.sh --extension-id EXTENSION_ID
 ```
 
-Expect all unit tests OK (currently 39).
+Expect all unit tests OK (currently 44).
 
 5. Pair the extension:
    - Open the extension **Options** page

@@ -9,7 +9,6 @@ async function refreshForm() {
   $('videoDir').value = cfg.videoDir || '';
   $('player').value = cfg.player || 'iina';
   $('localPrefer').checked = cfg.localPreferPlayback !== false;
-  $('showFullPath').checked = cfg.showFullPath !== false;
   const id = chrome.runtime.id;
   $('extId').textContent = id;
   $('installCmd').textContent =
@@ -70,12 +69,10 @@ $('save').addEventListener('click', async () => {
       videoDir: $('videoDir').value.trim(),
       player: $('player').value,
       localPreferPlayback: $('localPrefer').checked,
-      showFullPath: $('showFullPath').checked,
     });
     await helperViaBackground('HELPER_SETTINGS_SET', {
       player: $('player').value,
       localPreferPlayback: $('localPrefer').checked,
-      showFullPath: $('showFullPath').checked,
       videoDir: $('videoDir').value.trim(),
     });
     status.className = 'status ok';

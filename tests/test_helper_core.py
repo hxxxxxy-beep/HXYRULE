@@ -344,6 +344,176 @@ class HelperCoreTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(looked["ordinals"]["200"], 2)
 
+    def test_ordinals_ensure_oldest_first_when_preferred_taken(self):
+        # Stale low seqs from a wiped library must not reverse a newest-first page.
+        self._req(
+            "POST",
+            "/ordinals/ensure",
+            body={
+                "items": [
+                    {"videoId": "1", "preferredSeq": 1},
+                    {"videoId": "2", "preferredSeq": 2},
+                    {"videoId": "3", "preferredSeq": 3},
+                    {"videoId": "4", "preferredSeq": 4},
+                ]
+            },
+        )
+        # Site order: newest → oldest. preferred 4…1 are all still reserved.
+        status, payload = self._req(
+            "POST",
+            "/ordinals/ensure",
+            body={
+                "items": [
+                    {"videoId": "40", "preferredSeq": 4},
+                    {"videoId": "30", "preferredSeq": 3},
+                    {"videoId": "20", "preferredSeq": 2},
+                    {"videoId": "10", "preferredSeq": 1},
+                ]
+            },
+        )
+        self.assertEqual(status, 200, payload)
+        # Oldest (10) → smallest new seq; newest (40) → largest.
+        self.assertEqual(payload["ordinals"]["10"], 5)
+        self.assertEqual(payload["ordinals"]["20"], 6)
+        self.assertEqual(payload["ordinals"]["30"], 7)
+        self.assertEqual(payload["ordinals"]["40"], 8)
+
+    def test_ordinals_ensure_newest_first_without_preferred(self):
+        status, payload = self._req(
+            "POST",
+            "/ordinals/ensure",
+            body={
+                "items": [
+                    {"videoId": "40"},
+                    {"videoId": "30"},
+                    {"videoId": "20"},
+                    {"videoId": "10"},
+                ]
+            },
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["ordinals"]["10"], 1)
+        self.assertEqual(payload["ordinals"]["20"], 2)
+        self.assertEqual(payload["ordinals"]["30"], 3)
+        self.assertEqual(payload["ordinals"]["40"], 4)
+
+    def test_ordinals_ensure_ignores_preferred_gaps_after_cold_start(self):
+        # After a library exists, preferred must not fill mid-range gaps (2563…).
+        self._req(
+            "POST",
+            "/ordinals/ensure",
+            body={
+                "items": [
+                    {"videoId": "100", "preferredSeq": 1},
+                    {"videoId": "200", "preferredSeq": 2},
+                    {"videoId": "300", "preferredSeq": 3},
+                ]
+            },
+        )
+        status, payload = self._req(
+            "POST",
+            "/ordinals/ensure",
+            body={
+                "items": [
+                    {"videoId": "40", "preferredSeq": 10},
+                    {"videoId": "30", "preferredSeq": 9},
+                ]
+            },
+        )
+        self.assertEqual(status, 200, payload)
+        # Newest-first DOM [40,30] → oldest-first max+1: 30=4, 40=5.
+        self.assertEqual(payload["ordinals"]["30"], 4)
+        self.assertEqual(payload["ordinals"]["40"], 5)
+
+    def test_ordinals_claim_newest_refavorite_gets_max(self):
+        self._req(
+            "POST",
+            "/ordinals/rebuild",
+            body={"videoIds": ["40", "30", "20", "10"], "renameFiles": False},
+        )
+        # 10 is oldest (seq 1). Refavorite as newest must bump to max+1.
+        status, payload = self._req(
+            "POST",
+            "/ordinals/claim-newest",
+            body={"videoIds": ["10"]},
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["ordinals"]["10"], 5)
+        status, looked = self._req(
+            "POST", "/ordinals/lookup", body={"videoIds": ["10", "40", "30"]}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(looked["ordinals"]["10"], 5)
+        self.assertEqual(looked["ordinals"]["40"], 4)
+        self.assertEqual(looked["ordinals"]["30"], 3)
+        # Batch claim: newest-first ids → highest seq on first id.
+        status, batch = self._req(
+            "POST",
+            "/ordinals/claim-newest",
+            body={"videoIds": ["99", "88"]},
+        )
+        self.assertEqual(status, 200, batch)
+        self.assertEqual(batch["ordinals"]["88"], 6)
+        self.assertEqual(batch["ordinals"]["99"], 7)
+
+    def test_ordinals_realign_repairs_reversed_batch(self):
+        # Simulate newest-first DOM ensure that assigned max+1 in the wrong order.
+        self._req(
+            "POST",
+            "/ordinals/ensure",
+            body={
+                "items": [
+                    {"videoId": "40", "preferredSeq": 4},
+                    {"videoId": "30", "preferredSeq": 3},
+                    {"videoId": "20", "preferredSeq": 2},
+                    {"videoId": "10", "preferredSeq": 1},
+                ]
+            },
+        )
+        # Force a reversed assignment via rebuild then manual ensure overwrite path:
+        # rebuild newest-first gives 40=4…10=1 (correct). Seed reversed with raw SQL-like
+        # second ensure after wipe: assign 40=1… by rebuilding opposite list.
+        self._req(
+            "POST",
+            "/ordinals/rebuild",
+            body={"videoIds": ["10", "20", "30", "40"], "renameFiles": False},
+        )
+        # Now 10=4 (wrong: 10 is oldest in true favorites order). Realign with
+        # preferred oldest=1 using newest-first preferred ranks.
+        status, payload = self._req(
+            "POST",
+            "/ordinals/realign",
+            body={
+                "items": [
+                    {"videoId": "40", "preferredSeq": 4},
+                    {"videoId": "30", "preferredSeq": 3},
+                    {"videoId": "20", "preferredSeq": 2},
+                    {"videoId": "10", "preferredSeq": 1},
+                ]
+            },
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["ordinals"]["10"], 1)
+        self.assertEqual(payload["ordinals"]["20"], 2)
+        self.assertEqual(payload["ordinals"]["30"], 3)
+        self.assertEqual(payload["ordinals"]["40"], 4)
+        # Idempotent when already aligned.
+        status2, payload2 = self._req(
+            "POST",
+            "/ordinals/realign",
+            body={
+                "items": [
+                    {"videoId": "40", "preferredSeq": 4},
+                    {"videoId": "30", "preferredSeq": 3},
+                    {"videoId": "20", "preferredSeq": 2},
+                    {"videoId": "10", "preferredSeq": 1},
+                ]
+            },
+        )
+        self.assertEqual(status2, 200, payload2)
+        self.assertEqual(payload2["ordinals"]["10"], 1)
+        self.assertEqual(payload2["ordinals"]["40"], 4)
+
     def test_ordinals_by_seq(self):
         self._req(
             "POST",

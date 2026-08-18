@@ -4,7 +4,6 @@ const DEFAULTS = {
   player: 'iina',
   videoDir: '/Volumes/External/HXYRULE',
   localPreferPlayback: true,
-  showFullPath: true,
   qualityOrder: ['1080p', '720p', '480p', '360p'],
   expectedOrigin: '',
 };

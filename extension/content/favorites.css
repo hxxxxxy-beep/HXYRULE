@@ -1397,7 +1397,6 @@ button.hxyrule-favcount:hover {
   color: #8b9ba9;
 }
 
-/* Toggle on: same red as site top My Favorites (`.button_fav.active` → #ce5f5d) */
 .hxyrule-controls .hxyrule-btn.is-active,
 .hxyrule-filterbar .hxyrule-btn.is-active,
 .hxyrule-controls .hxyrule-btn.is-active:hover,
@@ -2563,10 +2562,6 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   display: none !important;
 }
 
-.hxyrule-toolbar--playlist {
-  margin: 8px 0 12px;
-}
-
 .hxyrule-msgbar,
 .hxyrule-error {
   flex: 0 0 auto;
@@ -2634,6 +2629,21 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
   max-width: 100%;
   min-width: 0;
   min-height: var(--hxyrule-step-height, 44px);
+}
+
+/* Off library pages (video watch etc.): compact status chip, top-right. */
+.hxyrule-offpage-status {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 2147483000;
+  flex: none;
+  max-width: min(420px, calc(100vw - 24px));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.hxyrule-offpage-status[hidden] {
+  display: none !important;
 }
 
 /* Dialogs / modals share the toolbar surface language. */
@@ -3356,9 +3366,9 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 }
 
 .hxyrule-modal--orphan .hxyrule-orphan-actions .hxyrule-btn {
-  min-height: 28px;
-  height: 28px;
-  padding: 4px 8px;
+  min-height: 36px;
+  height: 36px;
+  padding: 6px 10px;
   border-radius: var(--hxyrule-radius-sm, 6px);
 }
 
@@ -3487,8 +3497,7 @@ html.hxyrule-compact-active .hxyrule-compact-thumbs.hxyrule-native-thumbs-hidden
 @media (max-width: 720px) {
   .hxyrule-toolbar,
   .hxyrule-filterbar,
-  .hxyrule-controls .hxyrule-pipeline,
-  .hxyrule-act-pipeline {
+  .hxyrule-controls .hxyrule-pipeline {
     flex-wrap: nowrap !important;
   }
   .hxyrule-btn {

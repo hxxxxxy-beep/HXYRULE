@@ -18,7 +18,7 @@
 - [ ] **Select pages** end page matches real pagination (no next-arrow off-by-one, e.g. 218 not 219).
 - [ ] Helper rejects wrong Origin/token; path escape tests pass (`python3 -m unittest discover -s tests -v`).
 
-## Filters & indexes (0.1.80)
+## Filters & indexes
 
 - [ ] Toolbar rails: **Command** (brand / Scan / Queue / Index / Edit / status) → **Match** → **View** (with Compact sort) → **Select** (with **Reset all**) → **Nav** (Pages / Jump). Brand or **F** collapses Match/View/Select. Match / View / Select / collapse / Compact sort persist across refresh (per Favorites or playlist entry).
 - [ ] **Reset all** restores Match + View + Select defaults (Compact View) and clears selection.

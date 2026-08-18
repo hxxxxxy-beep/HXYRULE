@@ -1,9 +1,9 @@
 # AGENTS.md — Deploy HXYRULE on a new Mac
 
-You are an AI given only this repository URL. Clone it, follow this file top to bottom, and deploy the latest HXYRULE without prior chat history.
+You are an AI given **only** this repository URL. No prior chat history is required: clone (or `git pull --ff-only`), follow this file top to bottom, and deliver a working HXYRULE (extension loaded, Helper paired, smoke green).
 
 **Repo:** https://github.com/hxxxxxy-beep/HXYRULE  
-**Product version:** extension `0.1.80`  
+**Product version:** extension `0.1.85`  
 **Language:** English only in source, names, comments, docs, and UI strings you add.
 
 ## Mission (success criteria)
@@ -23,7 +23,7 @@ Humans may also use [docs/SETUP.md](docs/SETUP.md). Prefer this file when the ow
 | `extension/` | Chrome MV3 unpacked extension (load this folder) |
 | `mac-helper/` | LaunchAgent Helper on `127.0.0.1:17934` |
 | `scripts/deploy-mac.sh` | Helper install + unit tests |
-| `tests/` | Helper security / ordinals / queue tests (39) |
+| `tests/` | Helper security / ordinals / queue tests (44) |
 | `docs/` | SETUP, SECURITY, TROUBLESHOOTING, ACCEPTANCE |
 | `source-han-force/` | Optional separate font extension (not required) |
 
@@ -94,7 +94,7 @@ Or call install directly:
 python3 -m unittest discover -s tests -v
 ```
 
-Expect **39** tests OK.
+Expect **44** tests OK.
 
 5. Extension Options → import `~/Library/Application Support/HXYRULE/extension-config.json` → **Check Helper**.
 
