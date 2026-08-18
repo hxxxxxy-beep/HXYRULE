@@ -920,7 +920,7 @@
         if (d != null && d > 0) return d;
       }
       const labeled = String(root.textContent || '').match(
-        /duration\s*[:：]?\s*(\d+:\d{1,2}(?::\d{1,2})?)/i,
+        /duration\s*[:]?\s*(\d+:\d{1,2}(?::\d{1,2})?)/i,
       );
       if (labeled) {
         const d = parseDurationSec(labeled[1]);
@@ -2100,7 +2100,7 @@
   function extractPlaylistNameFromText(raw, pid) {
     const s = String(raw || '').replace(/\s+/g, ' ').trim();
     if (!s) return '';
-    const myPl = s.match(/my\s+playlist\s+(.+?)\s*[\(（]/i);
+    const myPl = s.match(/my\s+playlist\s+(.+?)\s*\(/i);
     if (myPl) {
       const direct = cleanPlaylistTitleText(myPl[1], pid);
       if (direct && !isJunkPlaylistTitle(direct)) return direct;
@@ -2108,7 +2108,6 @@
     const stripped = s
       .replace(/\bpage\s*\d+\b/gi, ' ')
       .replace(/\(\s*[\d,\s.]+\s*(videos?)?\s*\)/gi, ' ')
-      .replace(/（\s*[\d,\s.]+\s*(videos?)?\s*）/gi, ' ')
       .replace(/^my\s+playlist\s+/i, ' ')
       .replace(/\|\s*Rule34.*$/i, ' ')
       .replace(/\s+/g, ' ')
@@ -2155,8 +2154,8 @@
       if (!raw) continue;
       // Don't parse our own jump chip format as a title source.
       if (el.classList?.contains(`${NS}-favcount`)) continue;
-      if (/^\s*.+\(\d+\)\s*[:：]/.test(raw) && !/my\s+playlist/i.test(raw)) {
-        const m = raw.match(/^(.+?)\s*\(\d+\)\s*[:：]/);
+      if (/^\s*.+\(\d+\)\s*[:]/.test(raw) && !/my\s+playlist/i.test(raw)) {
+        const m = raw.match(/^(.+?)\s*\(\d+\)\s*[:]/);
         if (m) {
           const n = cleanPlaylistTitleText(m[1], pid);
           if (n && !isJunkPlaylistTitle(n) && n !== 'Playlist') {
@@ -10973,19 +10972,18 @@
       .trim();
     if (!t) return '';
     t = t
-      .replace(/^my\s*playlists?\s*[:：\-–]?\s*/i, '')
-      .replace(/^playlists?\s*[:：\-–]?\s*/i, '')
+      .replace(/^my\s*playlists?\s*[:\-–]?\s*/i, '')
+      .replace(/^playlists?\s*[:\-–]?\s*/i, '')
       .replace(/\b(public|private)\b/gi, ' ')
       .replace(/\b\d[\d\s,]*\s*videos?\b/gi, ' ')
       .replace(/\(\s*[\d,\s.]+\s*(videos?)?\s*\)/gi, ' ')
-      .replace(/（\s*[\d,\s.]+\s*(videos?)?\s*）/gi, ' ')
       .replace(/\bpage\s*\d+\b/gi, ' ')
       .replace(new RegExp(`^#?${pid}\\s*[·•\\-:]?\\s*`, 'i'), '')
       .replace(new RegExp(`\\s*[#(]?${pid}[)]?\\s*$`, 'i'), '')
       .replace(/^\(\s*\)\s*/, '')
       .replace(/\s+/g, ' ')
       .trim();
-    if (/^(create|new|新建|edit|delete|remove|view)/i.test(t)) return '';
+    if (/^(create|new|edit|delete|remove|view)/i.test(t)) return '';
     if (t === pid || t === `Playlist ${pid}`) return '';
     return t;
   }
@@ -15194,7 +15192,7 @@
       ) return;
       const identity = `${el.className || ''} ${el.id || ''} ${el.getAttribute('title') || ''} ` +
         `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`;
-      const isClose = /close|关闭|dismiss|\u00d7|^\s*x\s*$/i.test(identity);
+      const isClose = /close|dismiss|\u00d7|^\s*x\s*$/i.test(identity);
       const topRight = rect.left >= maxLeft;
       // Hide close X and window-size toggles in the popup chrome.
       if (isClose || topRight) {
@@ -15381,7 +15379,7 @@
           '[data-fancybox-close], .fancybox-close-small, .fancybox-close, ' +
             '.popup-close, .js-close-popup, [data-action="close-popup"]',
         ) ||
-        (compactTopControl && /close|back|dismiss|关闭|返回|\u00d7/i.test(identity));
+        (compactTopControl && /close|back|dismiss|\u00d7/i.test(identity));
       const backdropExit =
         target === event.target &&
         /fancybox-bg|fancybox-overlay|popup-overlay|modal-backdrop|overlay-bg/i.test(identity);

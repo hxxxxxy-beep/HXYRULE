@@ -1177,17 +1177,16 @@ function parsePlaylistsFromHtml(html) {
       .trim();
     if (!t) return '';
     t = t
-      .replace(/^my\s*playlists?\s*[:：\-–]?\s*/i, '')
-      .replace(/^playlists?\s*[:：\-–]?\s*/i, '')
+      .replace(/^my\s*playlists?\s*[:\-–]?\s*/i, '')
+      .replace(/^playlists?\s*[:\-–]?\s*/i, '')
       .replace(/\b(public|private)\b/gi, ' ')
       .replace(/\b\d[\d\s,]*\s*videos?\b/gi, ' ')
       .replace(/\(\s*[\d,\s.]+\s*(videos?)?\s*\)/gi, ' ')
-      .replace(/（\s*[\d,\s.]+\s*(videos?)?\s*）/gi, ' ')
       .replace(new RegExp(`^#?${pid}\\s*[·•\\-:]?\\s*`, 'i'), '')
       .replace(new RegExp(`\\s*[#(]?${pid}[)]?\\s*$`, 'i'), '')
       .replace(/\s+/g, ' ')
       .trim();
-    if (/^(create|new|新建|edit|delete|remove|view)/i.test(t)) return '';
+    if (/^(create|new|edit|delete|remove|view)/i.test(t)) return '';
     if (t === pid || t === `Playlist ${pid}`) return '';
     return t;
   };

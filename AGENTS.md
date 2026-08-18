@@ -3,7 +3,7 @@
 You are an AI given **only** this repository URL. No prior chat history is required: clone (or `git pull --ff-only`), follow this file top to bottom, and deliver a working HXYRULE (extension loaded, Helper paired, smoke green).
 
 **Repo:** https://github.com/hxxxxxy-beep/HXYRULE  
-**Product version:** extension `0.1.85`  
+**Product version:** extension `0.1.86`  
 **Language:** English only in source, names, comments, docs, and UI strings you add.
 
 ## Mission (success criteria)

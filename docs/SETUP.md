@@ -8,7 +8,7 @@ This document is enough to deploy without prior chat history. Read `README.md` f
 
 ## What this is
 
-- Chrome MV3 unpacked extension (`extension/`, version **0.1.85**)
+- Chrome MV3 unpacked extension (`extension/`, version **0.1.86**)
 - macOS LaunchAgent Helper (`mac-helper/`, `127.0.0.1:17934`)
 - Optional: `source-han-force/` (Source Han Serif on all pages; not required — see its README)
 - Personal enhancer only — does **not** change Rule34Video servers
